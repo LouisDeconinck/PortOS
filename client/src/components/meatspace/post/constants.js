@@ -451,3 +451,12 @@ export const getDifficultyColor = (difficulty) => {
 // Re-exported from the leaf both server/services/meatspacePost.js and this
 // file used to carry separate copies of.
 export { nBackBalancedAccuracy } from '../../../../../server/lib/postScoring.js';
+
+/**
+ * The resolved config of a drill result, under whichever name that result
+ * carries it: a live in-session result keeps `config`, while a stored history
+ * task persists the same map as `difficulty` (see `postSessionTaskSchema` in
+ * `server/lib/postValidation.js`). Anything reading a drill's settings back out
+ * of a result has to handle both, so it is named once here.
+ */
+export const drillResultConfig = (result) => result?.config || result?.difficulty || null;
