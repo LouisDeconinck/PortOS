@@ -4,6 +4,15 @@ import { CheckCircle, XCircle } from 'lucide-react';
 import { MEMORY_DRILL_TYPES, DRILL_LABELS } from './constants';
 import { powersBreakdownFromPrompt } from '../../../lib/powersBreakdown.js';
 import { shouldIgnoreGlobalKey } from '../../../lib/a11yKeyboard.js';
+import EstimationPrecision from './EstimationPrecision';
+
+// Answer-input copy for the drill types that need their own wording. Types not
+// listed here (including every text/memory drill) take the default.
+const INPUT_COPY = {
+  'applied-numeracy': { placeholder: 'Number (unit optional)', ariaLabel: 'Your numeric answer' },
+  estimation: { placeholder: 'Estimate', ariaLabel: 'Your estimate' },
+};
+const DEFAULT_INPUT_COPY = { placeholder: 'Answer', ariaLabel: 'Your answer' };
 
 function PowersLesson({ prompt }) {
   const breakdown = powersBreakdownFromPrompt(prompt);
@@ -142,6 +151,8 @@ export default function PostDrillRunner({ session }) {
   // so the explicit extra check this used to need is gone.
   const isTextDrill = MEMORY_DRILL_TYPES.includes(currentDrill.type);
   const isAppliedNumeracy = currentDrill.type === 'applied-numeracy';
+  const isEstimation = currentDrill.type === 'estimation';
+  const inputCopy = INPUT_COPY[currentDrill.type] || DEFAULT_INPUT_COPY;
   const timePct = timeLimitMs > 0 ? (timeLeft / timeLimitMs) * 100 : 0;
   const progressPct = totalQuestions > 0 ? ((currentQuestionIndex + 1) / totalQuestions) * 100 : 0;
 
@@ -198,6 +209,7 @@ export default function PostDrillRunner({ session }) {
                 <>
                   <div className="text-sm text-gray-400">Expected</div>
                   <div className="text-3xl font-mono font-bold text-port-success">{lastAnswer.expected}</div>
+                  {isEstimation && <EstimationPrecision tolerancePct={currentDrill.config?.tolerancePct} />}
                 </>
               )}
               <PowersLesson prompt={lastAnswer.prompt} />
@@ -271,6 +283,9 @@ export default function PostDrillRunner({ session }) {
         <div className="text-4xl font-mono font-bold text-white">
           {question?.prompt}
         </div>
+        {isEstimation && (
+          <EstimationPrecision tolerancePct={currentDrill.config?.tolerancePct} className="mt-3 text-sm text-gray-400" />
+        )}
       </div>
 
       {/* Input */}
@@ -304,8 +319,8 @@ export default function PostDrillRunner({ session }) {
             inputMode={isTextDrill ? 'text' : isAppliedNumeracy ? 'decimal' : 'numeric'}
             value={inputValue}
             onChange={e => setInputValue(e.target.value)}
-            placeholder={isAppliedNumeracy ? 'Number (unit optional)' : 'Answer'}
-            aria-label={isAppliedNumeracy ? 'Your numeric answer' : 'Your answer'}
+            placeholder={inputCopy.placeholder}
+            aria-label={inputCopy.ariaLabel}
             autoFocus
             className="w-full bg-port-bg border border-port-border rounded-lg px-4 py-3 text-xl font-mono text-white text-center placeholder-gray-600 focus:border-port-accent focus:outline-none"
           />

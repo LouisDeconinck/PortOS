@@ -157,6 +157,7 @@ export * from './drumPlayback.js';
 export * from './editorialChecks.js';
 export * from './editorialHealth.js';
 export * from './episodeSceneImport.js';
+export * from './estimationTolerance.js';
 export * from './lookaheadTransport.js';
 export * from './lossSparkline.js';
 export * from './managedAppSources.js';
