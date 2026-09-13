@@ -3,6 +3,7 @@ import { CheckCircle, XCircle } from 'lucide-react';
 
 import { MEMORY_DRILL_TYPES, DRILL_LABELS } from './constants';
 import { powersBreakdownFromPrompt } from '../../../lib/powersBreakdown.js';
+import { shouldIgnoreGlobalKey } from '../../../lib/a11yKeyboard.js';
 
 function PowersLesson({ prompt }) {
   const breakdown = powersBreakdownFromPrompt(prompt);
@@ -93,6 +94,24 @@ export default function PostDrillRunner({ session }) {
     setBlankValues({});
     inputRef.current?.focus();
   }, [currentQuestionIndex, currentDrillIndex]);
+
+  // Enter advances past the training verdict — from here rather than from an
+  // `autoFocus` on the Next button. The Enter that submitted the answer is still
+  // down when that button mounts and takes focus, so the browser activates it
+  // off the same keystroke (its keypress/keyup, or the first auto-repeat) and
+  // the verdict is gone in the tick it appeared. `shouldIgnoreGlobalKey` drops
+  // auto-repeat and stands down for a focused control, so one press advances
+  // once.
+  useEffect(() => {
+    if (!isTraining || !lastAnswer) return undefined;
+    const onKey = (e) => {
+      if (e.key !== 'Enter' || shouldIgnoreGlobalKey(e)) return;
+      e.preventDefault();
+      acknowledgeAnswer();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isTraining, lastAnswer, acknowledgeAnswer]);
 
   const handleSubmit = useCallback((e) => {
     e.preventDefault();
@@ -195,7 +214,6 @@ export default function PostDrillRunner({ session }) {
 
         <button
           onClick={acknowledgeAnswer}
-          autoFocus
           className="w-full px-6 py-3 bg-port-accent-2 hover:bg-port-accent-2/80 text-port-on-accent-2 font-medium rounded-lg transition-colors"
         >
           Next
