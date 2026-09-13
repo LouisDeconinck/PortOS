@@ -533,7 +533,7 @@ export default function MediaModels() {
             </button>
           </div>
           {addError && (
-            <p className="text-xs text-port-error flex items-start gap-1">
+            <p role="alert" className="text-xs text-port-error flex items-start gap-1">
               <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" /> {addError}
             </p>
           )}

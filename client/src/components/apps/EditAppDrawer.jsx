@@ -335,7 +335,7 @@ export default function EditAppDrawer({ app, onClose, onSave }) {
       closeOnBackdrop={false}
     >
         {error && (
-          <div className="mb-4 p-3 bg-port-error/20 border border-port-error rounded-lg text-port-error text-sm">
+          <div role="alert" className="mb-4 p-3 bg-port-error/20 border border-port-error rounded-lg text-port-error text-sm">
             {error}
           </div>
         )}

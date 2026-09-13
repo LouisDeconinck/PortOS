@@ -356,7 +356,7 @@ export default function WorkflowTab({ apps, providers, providersLoaded }) {
         </div>
       </header>
 
-      {error && <div className="flex items-center gap-2 rounded border border-port-error/40 bg-port-error/10 p-3 text-sm text-port-error"><AlertTriangle className="h-4 w-4" />{error}</div>}
+      {error && <div role="status" className="flex items-center gap-2 rounded border border-port-error/40 bg-port-error/10 p-3 text-sm text-port-error"><AlertTriangle className="h-4 w-4" />{error}</div>}
       {loading && !graph && <div className="py-12 text-center text-sm text-gray-500">Building schedule timeline…</div>}
 
       {graph && model && (

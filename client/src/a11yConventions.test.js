@@ -1967,6 +1967,155 @@ function* imagesWithoutAlt(src) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Conditional error renders must announce themselves (#7266).
+//
+// The shape is always the same: an async action fails, a flag flips, and red
+// text appears somewhere below the form while focus stays on the button that
+// started it. An inert <div> announces nothing, so a screen-reader user's
+// mental model after a failed save is "it worked" (WCAG 4.1.3 Status Messages).
+// The answer is either <Banner>, which now supplies role="alert"/"status"
+// itself, or an explicit role on the element.
+
+// Which host elements this rule is about: the ones that carry the failure text.
+// A conditionally-rendered <a>/<button> is a control the user reaches by
+// tabbing, and a component tag owns its own semantics — both are out of remit.
+const ERROR_TEXT_HOST_TAGS = new Set(['div', 'p', 'span', 'section', 'article']);
+
+// role="alert"/"status" carry implicit live semantics; aria-live is the
+// explicit spelling. Any of the three satisfies the rule.
+const LIVE_REGION_ATTRIBUTE = /(?:^|\s)(?:aria-live\s*=|role\s*=\s*(?:["'{]\s*)?["']?(?:alert|status|log|progressbar)\b)/;
+const hasLiveRegion = (tag) => LIVE_REGION_ATTRIBUTE.test(tag);
+
+// The expression immediately guarding the element at `index`, or null when the
+// element is not the direct result of a `{… && <tag>}` render. Only whitespace
+// and grouping parens may sit between the `&&` and the `<`: a tag that opened
+// after the guard is a child of some other element, not the guarded node.
+const guardExpressionBefore = (src, index) => {
+  let i = index - 1;
+  while (i >= 0 && /[\s(]/.test(src[i])) i -= 1;
+  if (i < 1 || src[i] !== '&' || src[i - 1] !== '&') return null;
+  const end = i - 1;
+  let start = end;
+  // Walk back to the `{` that opened the JSX expression container. A closing
+  // brace or a statement terminator means this `&&` is not a JSX guard at all.
+  // `>` deliberately does NOT stop the walk — inside a guard it is a comparison
+  // (`missing.length > 0 &&`) or an arrow tail far more often than a tag
+  // boundary, and stopping on it blinded the rule to every such guard.
+  while (start > 0 && !'{};'.includes(src[start - 1])) start -= 1;
+  if (start === 0 || src[start - 1] !== '{') return null;
+  const expression = src.slice(start, end).trim();
+  // What `>` was there to catch: JSX TEXT containing a bare `&&`, where the walk
+  // crosses the enclosing element's own opening tag. A guard expression holds no
+  // `<` (`a < b` in one is rare enough to lose), so its presence means the walk
+  // left the expression container.
+  return expression.includes('<') ? null : expression;
+};
+
+// Does this guard name an error? The last path segment is the one that names
+// the value — `status.error`, `fork?.error`, `s.result?.error` — so a
+// `preferredTone` or an `err.details` nested inside an already-live section is
+// not dragged in by a substring match on the whole expression.
+const ERROR_NAMED_SEGMENT = /(?:error|^errs?$)/i;
+const guardsOnError = (expression) => {
+  // `{a && b && <div>}` guards on the LAST operand — the earlier ones are
+  // preconditions that say nothing about what the element renders — and
+  // `{cond ? x : y && <div>}` on the last ternary arm. Peel both before asking
+  // what the guard names.
+  // `?(?!\.)` so the ternary peel does not eat optional chaining — splitting
+  // `errorContext?.missing?.length > 0` on a bare `?` leaves `.length > 0`, and
+  // the guard stops naming the error it is guarding on.
+  const operand = expression.split('&&').pop().split(/\?(?!\.)|:/).pop().trim();
+  // A NEGATED error guard renders the SUCCESS path — `{!loadError && <Viewer/>}`
+  // is the model, not the failure message — and announcing the normal content
+  // of a page as a status message is its own defect.
+  if (operand.startsWith('!') && !operand.startsWith('!=')) return false;
+  const segments = operand.split(/[.[\]()]/).map((part) => part.trim()).filter(Boolean);
+  const namesError = (text) => Boolean(text) && ERROR_NAMED_SEGMENT.test(text);
+  // A comparison is not a truthiness check, and reading only its tail turns
+  // `status !== 'error'` — a SUCCESS guard — into an error render.
+  const comparison = operand.match(/(!|=)==?/);
+  if (comparison) {
+    // `x !== y` renders when the two differ: the success path, or a detail
+    // beside an error already on screen. Either way, not the error itself.
+    if (comparison[1] === '!') return false;
+    const right = operand.slice(comparison.index + comparison[0].length).trim();
+    // `error === null` is the success branch spelled the other way round.
+    if (/^(?:null|undefined|false|''|""|0)$/.test(right)) return false;
+    return namesError(right) || namesError(segments[0]) || namesError(segments.at(-1));
+  }
+  // The tail names the value (`status.error`, `fork?.error`), but a standard
+  // Error is read through its properties, so the ROOT names it too
+  // (`error.message`). Everything between is a container, not the name.
+  return namesError(segments.at(-1)) || namesError(segments[0]);
+};
+
+// Does a live region already cover this element — one it sits inside, or one it
+// renders? Either way the text is announced exactly once, which is the point;
+// only an element with none anywhere on its path is silent.
+const announcesTag = (node) => node.tag && (hasLiveRegion(node.tag) || node.name === 'Banner');
+
+const isCoveredByLiveRegion = (node, nodes) => {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (announcesTag(parent)) return true;
+  }
+  return nodes.some((other) => announcesTag(other) && isDescendantOf(other, node));
+};
+
+const isDescendantOf = (node, ancestor) => {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (parent === ancestor) return true;
+  }
+  return false;
+};
+
+// The conditional renders this rule deliberately does not ask to announce,
+// keyed by the guard EXPRESSION rather than a line number so an edit above them
+// cannot silently retire the entry (or resurrect a stale one).
+const JUSTIFIED_SILENT_ERROR_RENDERS = new Map([
+  // Wraps <AppOperationBanner>, which declares role="status" itself. A one-file
+  // walk cannot see across the import, and a second role here would nest two
+  // live regions around the same text.
+  ['src/components/apps/tabs/RepositorySourcePanel.jsx', new Set(['(isOperating || restarting || operationError || operationCompleted)'])],
+  // Not a status message: `expandedSections.errors` is a disclosure toggle over
+  // a static list of historical error CATEGORIES. It appears because the user
+  // opened it, so announcing it would duplicate the button they just pressed.
+  ['src/components/cos/tabs/LearningTab.jsx', new Set([
+    'expandedSections.errors',
+    // Both of these render INSIDE that disclosure: a static analytics list of
+    // historical error categories and samples, already on screen when the user
+    // opens the section. Nothing appears in response to anything.
+    'error.affectedTypes?.length > 0',
+    'err.details',
+  ])],
+  // A truncation qualifier — "(results may be truncated)" — inside the <p> that
+  // already reports the count. It is a clause of that sentence, not a message,
+  // and announced on its own it says nothing.
+  ['src/components/apps/tabs/DatadogTab.jsx', new Set(['errors.length >= 100'])],
+]);
+
+// Two substring-cheap prechecks before the walk: a file that never writes
+// `&& <div` cannot hold the shape at all, and lexing one into the tag index
+// costs a pass over its whole text.
+const MAY_GUARD_ERROR_RENDER = /&&\s*\(?\s*<(?:div|p|span|section|article)[\s>/]/;
+
+function* silentErrorRenders(src, file) {
+  if (!MAY_GUARD_ERROR_RENDER.test(src) || !/err/i.test(src)) return;
+  // Materialized only once a candidate is actually found: the coverage check
+  // needs every node, and the files that reach it are a small minority.
+  let nodes = null;
+  for (const node of forEachOpeningTag(src)) {
+    if (!ERROR_TEXT_HOST_TAGS.has(node.name)) continue;
+    if (hasLiveRegion(node.tag)) continue;
+    const expression = guardExpressionBefore(src, node.index);
+    if (!expression || !guardsOnError(expression)) continue;
+    nodes ??= [...forEachOpeningTag(src)];
+    if (isCoveredByLiveRegion(node, nodes)) continue;
+    if (JUSTIFIED_SILENT_ERROR_RENDERS.get(file)?.has(expression)) continue;
+    yield node;
+  }
+}
+
 describe('a11y conventions', () => {
   // Modal.jsx IS the shared implementation; Drawer and Layout use the same
   // backdrop treatment for a slide-in panel / mobile nav scrim, both of which
@@ -3904,4 +4053,83 @@ function B() { const sensors = useSensors(useSensor(PointerSensor)); return <Dnd
     }
     expect(offenders, `Menu-family role without arrow-key focus management — a role="menu" promises ArrowUp/ArrowDown roving focus, Home/End and Escape-to-trigger that a hand-rolled popover doesn't implement (WCAG 4.1.2). Drop the role (the ShellProviderLauncher.jsx precedent: a named group of plain controls needs none) or route the popover through components/ui/OverflowMenu.jsx:\n${offenders.join('\n')}`).toEqual([]);
   });
+
+  it('gives every conditional error render a live region (#7266)', () => {
+    // Probe first — the tree is green by construction (this change swept it),
+    // so nothing left in it pins what the walk rejects, and a silent change of
+    // shape would turn the rule into a vacuous pass over zero matches.
+    const probe = (src) => [...silentErrorRenders(src, 'probe.jsx')].map(({ index }) => lineOf(src, index));
+    expect(probe('{error && <div>{error}</div>}')).toEqual([1]);
+    expect(probe('{saveError && (\n  <p className="x">{saveError}</p>\n)}')).toEqual([2]);
+    // Every accepted answer silences it: role, aria-live, or the shared Banner.
+    expect(probe('{error && <div role="alert">{error}</div>}')).toEqual([]);
+    expect(probe('{error && <div role="status">{error}</div>}')).toEqual([]);
+    expect(probe('{error && <div aria-live="polite">{error}</div>}')).toEqual([]);
+    expect(probe('{error && <Banner tone="error">{error}</Banner>}')).toEqual([]);
+    // …and a live region anywhere on the path covers what is inside it, in
+    // either direction: an ancestor that announces, or a wrapper that delegates
+    // to a Banner it renders.
+    expect(probe('<div role="alert">{error && <span>{error}</span>}</div>')).toEqual([]);
+    expect(probe('{error && <div><Banner tone="error">{error}</Banner></div>}')).toEqual([]);
+
+    // A NEGATED guard renders the success path, not the failure — announcing a
+    // page's normal content as a status message is its own defect.
+    expect(probe('{!loadError && <div>{model.name}</div>}')).toEqual([]);
+    expect(probe('{ready && !error && <div>done</div>}')).toEqual([]);
+    // A guard that names no error is out of remit, however close it reads…
+    expect(probe('{preferredTone && <div>{preferredTone}</div>}')).toEqual([]);
+    // A standard Error is read through its properties, so the guard names it at
+    // the ROOT of the path rather than at the tail.
+    expect(probe('{error.message && <div>{error.message}</div>}')).toEqual([1]);
+    expect(probe('{err.details && <div>{err.details}</div>}')).toEqual([1]);
+    // Deliberately NOT the middle of a path: `insights.recentUnknownErrors.length`
+    // names a COUNT on an analytics record, and reading every segment turns a
+    // panel that was always on screen into a status message.
+    expect(probe('{insights.recentUnknownErrors.length > 0 && <div>samples</div>}')).toEqual([]);
+    // A comparison is not a truthiness check. `=== 'error'` IS the error state;
+    // `!==` renders when two values differ — the success path, or a detail
+    // beside an error already on screen — and `=== null` is success spelled
+    // backwards.
+    expect(probe("{state.status === 'error' && <div>failed</div>}")).toEqual([1]);
+    expect(probe("{lastRun.errorCode === 'HF_AUTH' && <div>sign in</div>}")).toEqual([1]);
+    expect(probe("{status !== 'error' && <div>{model.name}</div>}")).toEqual([]);
+    expect(probe('{error === null && <div>done</div>}')).toEqual([]);
+    // A guard holding a comparison must survive the walk back to its `{` — the
+    // `>` in it is not a tag boundary.
+    expect(probe('{errorContext?.missing?.length > 0 && <p>Unresolved</p>}')).toEqual([1]);
+    // …but JSX TEXT holding a bare `&&` is not a guard, and the walk must not
+    // cross the enclosing tag to pretend it is.
+    expect(probe('<div className="x">retry && <span>{error}</span></div>')).toEqual([]);
+    // …and only the LAST operand is the guard; an error precondition on a
+    // render of something else is not an error message.
+    expect(probe('{error && retryCount && <div>{retryCount}</div>}')).toEqual([]);
+    expect(probe('{loading && error && <div>{error}</div>}')).toEqual([1]);
+    // Controls are reached by tabbing and own their own semantics — a
+    // conditionally-rendered <button>/<a>/component is a different question.
+    expect(probe('{error && <button onClick={retry}>Retry</button>}')).toEqual([]);
+    expect(probe('{error && <ErrorCard error={error} />}')).toEqual([]);
+    // A `&&` that is not a JSX guard must not drag the next element in.
+    expect(probe('const shown = a && b;\n<div>{x}</div>')).toEqual([]);
+    // A JSX example written in a comment is masked before the walk.
+    expect(probe(maskComments('{/* {error && <div>{error}</div>} */}'))).toEqual([]);
+
+    // Prove the walk still sees the shape on a real file — an allowlisted entry
+    // is only meaningful while the matcher would otherwise have flagged it.
+    for (const [file, expressions] of JUSTIFIED_SILENT_ERROR_RENDERS) {
+      const src = maskedSourceOf(file);
+      const flagged = [...silentErrorRenders(src, `${file}.unallowlisted`)]
+        .map(({ index }) => guardExpressionBefore(src, index));
+      for (const expression of expressions) {
+        expect(flagged, `${file} no longer renders \`${expression}\` — retire the allowlist entry`).toContain(expression);
+      }
+    }
+
+    const offenders = [];
+    for (const file of trackedJsxFiles()) {
+      const src = maskedSourceOf(file);
+      for (const node of silentErrorRenders(src, file)) {
+        offenders.push(`${file}:${lineOf(src, node.index)}`);
+      }
+    }
+    expect(offenders, `Conditionally-rendered error text that announces nothing — render <Banner tone="error"> (it supplies role="alert" itself), or add role="alert" for an error the user's own action produced and role="status" for a passive load failure (WCAG 4.1.3):\n${offenders.join('\n')}`).toEqual([]);  });
 });

@@ -162,7 +162,7 @@ function ResultPanel({ result }) {
       </div>
 
       {result.error && (
-        <p className="text-sm text-port-error whitespace-pre-wrap">{result.error}</p>
+        <p role="alert" className="text-sm text-port-error whitespace-pre-wrap">{result.error}</p>
       )}
       {result.text && (
         <div className="space-y-1">

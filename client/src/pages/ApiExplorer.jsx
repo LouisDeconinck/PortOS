@@ -224,7 +224,7 @@ function RestReferenceView() {
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto bg-port-bg">
-        {error && <div className="p-6 text-port-error">OpenAPI spec unavailable: {error}</div>}
+        {error && <div role="status" className="p-6 text-port-error">OpenAPI spec unavailable: {error}</div>}
         {!error && !spec && <div className="p-6"><BrailleSpinner text="Loading REST reference" /></div>}
         {!error && spec && (
           <div className="p-3 sm:p-4 space-y-4 max-w-[1500px] mx-auto">

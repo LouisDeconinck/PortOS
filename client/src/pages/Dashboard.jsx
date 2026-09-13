@@ -503,12 +503,12 @@ export default function Dashboard() {
       <FirstRunCard />
 
       {dataError && (
-        <div className="p-4 bg-port-error/20 border border-port-error rounded-lg text-port-error">
+        <div role="status" className="p-4 bg-port-error/20 border border-port-error rounded-lg text-port-error">
           {dataError}
         </div>
       )}
       {layoutsError && (
-        <div className="p-4 bg-port-error/20 border border-port-error rounded-lg text-port-error">
+        <div role="status" className="p-4 bg-port-error/20 border border-port-error rounded-lg text-port-error">
           Layouts: {layoutsError}
         </div>
       )}
