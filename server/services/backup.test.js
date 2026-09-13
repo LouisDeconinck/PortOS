@@ -1490,6 +1490,33 @@ describe('restoreSnapshot manifest verification', () => {
     expect(await realFs.readFile(livePath, 'utf8')).toBe('healthy live data');
   });
 
+  it('names the unmanifested file so the operator can act on it', async () => {
+    const relativePath = 'restore-integrity/example.json';
+    await writeManifest({ [relativePath]: await writeSnapshotFile(relativePath, 'trusted backup') });
+    await writeSnapshotFile('restore-integrity/unrecorded.json', 'added after backup');
+
+    await expect(restoreSnapshot(tmpRoot, 'snap-1', { dryRun: true }))
+      .rejects.toThrow(/restore-integrity\/unrecorded\.json/);
+  });
+
+  it('restores despite OS metadata a file browser dropped into the snapshot', async () => {
+    // The destination is commonly an iCloud/Finder folder, so merely BROWSING a
+    // snapshot writes .DS_Store beside the data — long after the manifest was
+    // sealed. Refusing that would strand an intact snapshot permanently.
+    const relativePath = 'brain/example.json';
+    await writeManifest({ [relativePath]: await writeSnapshotFile(relativePath, 'snapshot data') });
+    await writeSnapshotFile('brain/.DS_Store', 'finder metadata');
+    await writeSnapshotFile('brain/._example.json', 'appledouble');
+
+    await expect(finishRestore({ dryRun: true, subdirFilter: 'brain' }))
+      .resolves.toMatchObject({ verification: { status: 'verified', checkedFiles: 1 } });
+    // ...and rsync must not carry them across either, or the transfer would
+    // exceed what the inventory verified.
+    expect(spawn.mock.calls[0][1]).toEqual(expect.arrayContaining([
+      '--exclude=.DS_Store', '--exclude=._*',
+    ]));
+  });
+
   it.each([
     ['missing', async (path) => realFs.unlink(path)],
     ['unreadable', async (path) => {
@@ -1989,8 +2016,18 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
         '--progress',
         '--itemize-changes',
         '--checksum',
+        // OS metadata excludes come BEFORE the includes — rsync takes the first
+        // matching rule — and mirror what the integrity inventory skips.
+        '--exclude=.DS_Store',
+        '--exclude=.localized',
+        '--exclude=Thumbs.db',
+        '--exclude=desktop.ini',
+        '--exclude=._*',
         '--dry-run',
-        '--include=brain/***',
+        // Leading `/` is load-bearing: rsync matches an unanchored pattern
+        // against the end of every path, so `brain/***` would also restore
+        // `data/<anything>/brain/**` — outside the scope the preflight verified.
+        '--include=/brain/***',
         '--include=*/',
         '--exclude=*',
         `${srcDir}/`,
@@ -1998,11 +2035,20 @@ describe('restoreSnapshot snapshotId, filter flags, and settings re-sync', () =>
       ]);
     });
 
-    it('emits no include/exclude flags when no subdirFilter is given', async () => {
+    it('emits no scope include/exclude flags when no subdirFilter is given', async () => {
       await runRestore('/dest', 'snap-1', { dryRun: true });
 
       const args = spawn.mock.calls[0][1];
-      expect(args.filter(a => a.startsWith('--include=') || a.startsWith('--exclude='))).toEqual([]);
+      // The OS-metadata excludes always ride along (they mirror what the
+      // integrity inventory skips); nothing else scopes an unfiltered restore.
+      expect(args.filter(a => a.startsWith('--include='))).toEqual([]);
+      expect(args.filter(a => a.startsWith('--exclude='))).toEqual([
+        '--exclude=.DS_Store',
+        '--exclude=.localized',
+        '--exclude=Thumbs.db',
+        '--exclude=desktop.ini',
+        '--exclude=._*',
+      ]);
     });
 
     it('echoes the subdirFilter back in the result', async () => {

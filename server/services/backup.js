@@ -11,7 +11,7 @@ import { killWithEscalation } from '../lib/killWithEscalation.js';
 import { access, lstat, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import { PassThrough } from 'node:stream';
 import { hostname } from 'os';
-import { join, resolve, relative, isAbsolute } from 'path';
+import { basename, join, resolve, relative, isAbsolute } from 'path';
 import { PATHS, ensureDir, readJSONFile, readJSONFileStrict, atomicWrite, sha256File } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { createLineReader } from '../lib/streamLines.js';
@@ -1024,8 +1024,30 @@ function manifestDataEntries(manifest, srcDir, subdirFilter) {
   return { selected, dataPaths };
 }
 
-const snapshotFileIntegrityError = (snapshotId) => new ServerError(
-  `Snapshot file integrity check failed: ${snapshotId}`,
+/**
+ * Filesystem metadata the OS writes into a directory on its own, after the
+ * manifest was sealed. The backup destination is commonly an iCloud/Finder
+ * folder (see `listSnapshots`), so simply BROWSING a snapshot in Finder drops a
+ * `.DS_Store` beside the data — which the unmanifested-file check below would
+ * then read as tampering and refuse to restore, permanently, on a snapshot that
+ * is byte-for-byte intact. These names are skipped by the inventory AND
+ * excluded from the restore transfer, so "everything transferred was verified"
+ * still holds.
+ */
+const OS_METADATA_FILES = new Set(['.DS_Store', '.localized', 'Thumbs.db', 'desktop.ini']);
+const isOsMetadataFile = (name) => OS_METADATA_FILES.has(name) || name.startsWith('._');
+
+/**
+ * rsync filter form of `OS_METADATA_FILES`. Deliberately UNANCHORED, unlike
+ * every path exclude in `DEFAULT_EXCLUDES`: these are basenames the OS writes
+ * into any directory, so matching at every depth is the point, not a bug.
+ */
+const OS_METADATA_RSYNC_EXCLUDES = [...OS_METADATA_FILES, '._*'].map(name => `--exclude=${name}`);
+
+const snapshotFileIntegrityError = (snapshotId, unmanifestedPath = null) => new ServerError(
+  // Name the offending entry: without it the operator is told their only backup
+  // failed integrity and given nothing to act on.
+  `Snapshot file integrity check failed: ${snapshotId}${unmanifestedPath ? ` (unmanifested file: ${unmanifestedPath})` : ''}`,
   { status: 409, code: 'BACKUP_FILE_INTEGRITY_FAILED' },
 );
 
@@ -1055,6 +1077,7 @@ async function snapshotManifestFilePaths(srcDir, subdirFilter) {
       throw err;
     });
     if (!info?.isFile()) continue;
+    if (isOsMetadataFile(basename(filePath))) continue;
 
     const normalized = relative(srcDir, filePath).replaceAll('\\', '/');
     if (!normalized || normalized.startsWith('../') || isAbsolute(normalized)) {
@@ -1098,9 +1121,9 @@ async function verifySnapshotFiles(snapshotDir, srcDir, snapshotId, subdirFilter
   // scope and reject additions before rsync reads or overwrites anything.
   const snapshotPaths = await snapshotManifestFilePaths(srcDir, subdirFilter)
     .catch(() => null);
-  if (!snapshotPaths || snapshotPaths.some(entry => !dataPaths.has(entry))) {
-    throw snapshotFileIntegrityError(snapshotId);
-  }
+  if (!snapshotPaths) throw snapshotFileIntegrityError(snapshotId);
+  const unmanifested = snapshotPaths.find(entry => !dataPaths.has(entry));
+  if (unmanifested) throw snapshotFileIntegrityError(snapshotId, unmanifested);
 
   for (const { filePath, expectedHash } of selected) {
     const info = await lstat(filePath).catch(() => null);
@@ -1148,10 +1171,19 @@ export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, sub
   // Restore must compare destination bytes even when size and mtime match.
   // Rsync's default quick-check would otherwise report a successful no-op for
   // equal-length edits that retain the snapshot timestamp.
-  const flags = ['--itemize-changes', '--checksum'];
+  // Before the include chain below: rsync takes the FIRST matching rule, so an
+  // exclude placed after `--include=/<filter>/***` would never be consulted.
+  // These are the files `snapshotManifestFilePaths` skips — keeping the two in
+  // step is what preserves "everything transferred was verified".
+  const flags = ['--itemize-changes', '--checksum', ...OS_METADATA_RSYNC_EXCLUDES];
   if (dryRun) flags.push('--dry-run');
   if (subdirFilter) {
-    flags.push(`--include=${subdirFilter}/***`);
+    // Anchored with a leading `/` — rsync matches an unanchored pattern against
+    // the END of every path, so a bare `youtube/***` would also restore
+    // `data/brain/youtube/**` over live files the user never selected. The
+    // integrity preflight above scopes itself to `data/<filter>/**` only, so an
+    // unanchored transfer overwrites bytes it never verified.
+    flags.push(`--include=/${subdirFilter}/***`);
     flags.push('--include=*/');
     flags.push('--exclude=*');
   }
