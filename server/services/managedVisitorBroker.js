@@ -173,7 +173,16 @@ export function createManagedVisitorBroker({ path, getApp, host, now = Date.now 
         const expected = { start: 'running', pause: 'paused', rest: 'resting', move: 'running', leave: 'left' }[request.action.type];
         if (result.sequence !== request.sequence || result.status !== expected || result.expiresAt !== session.hostExpiresAt) throw fail('Host action sequence/status mismatch.');
         session.sequence = result.sequence;
-        if (request.action.type === 'leave') sessions.delete(id);
+        // Same bookkeeping `close()` does on an acknowledged leave: the host
+        // just confirmed `status: 'left'` for this scope, so the receipt is
+        // earned. Without it a follow-up cleanup call inside the boot
+        // quarantine window 409s on a session this process saw leave cleanly,
+        // pausing the app's embodiment ownership for the full lease deadline.
+        if (request.action.type === 'leave') {
+          sessions.delete(id);
+          remember(confirmedSessions, id, { ...session.scope });
+          if (session.provenAdmission) remember(confirmedScopes, originalScopeKey(session.scope), true);
+        }
       }
       return { ...result, sessionId: id, ...(observation ? {} : { expiresAt: session.expiresAt }) };
     })().catch(async () => { await close(session); throw fail('Host operation unavailable or inconsistent; visitor authority revoked.'); })

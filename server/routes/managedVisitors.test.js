@@ -157,6 +157,19 @@ it('unsequenced scoped leave revokes pending actions and retries unconfirmed cle
   expect((await shared.broker.leave(auth, visit.sessionId, scope(visit))).status).toBe('left');
   expect((await shared.broker.leave(auth, visit.sessionId, scope(visit))).status).toBe('left');
 });
+it('leaves through the action channel and still answers the follow-up cleanup call idempotently', async () => {
+  // An app may end a visit in-band (`action: { type: 'leave' }`) and then make
+  // the documented cleanup call. The host already acknowledged `status: 'left'`
+  // for this scope, so the receipt is earned — without it the follow-up 409s
+  // inside the boot quarantine window and the app holds embodiment ownership
+  // paused for the full lease deadline over a session that left cleanly.
+  const auth = await shared.broker.authenticate(credentials.credential), visit = await shared.broker.admit(auth, admission);
+  const left = await shared.broker.action(auth, visit.sessionId, { ...scope(visit), sequence: 0, action: { type: 'leave' } });
+  expect(left.status).toBe('left');
+  expect((await shared.broker.leave(auth, visit.sessionId, scope(visit))).status).toBe('left');
+  // The receipt is scope-checked like any other, not a blanket pass.
+  await expect(shared.broker.leave(auth, visit.sessionId, { ...scope(visit), individualId: 'outside' })).rejects.toThrow(/scope/);
+});
 it('cancels an unknown pending admission by original scope, waits for its acknowledgment and cleans it before confirming', async () => {
   const auth = await shared.broker.authenticate(credentials.credential); let release;
   delayed = new Promise(resolve => { release = resolve; });
