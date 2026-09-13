@@ -644,10 +644,17 @@ function releasePending(id) {
  * `DELETE` unsends for everyone. It stays `awaiting-confirmation` with a
  * recorded reason, which reads as "sent, unconfirmed" and offers no re-send.
  */
-async function resolveConfirmation(id, reason) {
+async function resolveConfirmation(id, reason, { terminal = false } = {}) {
   const pending = pendingConfirmations.get(id);
   if (!pending || localTransitions.has(id)) return null;
-  if (reason === 'fallback-timeout' || reason === 'manual') pending.deadlineReached = true;
+  // A `manual` probe is terminal ONLY when the caller armed the row itself —
+  // a row stranded across a restart, whose real deadline elapsed long ago. When
+  // a live timer is already counting down, the send is seconds old and the user
+  // simply pressed "Check delivery" early: a null lookup there means "not yet",
+  // not "never". Treating it as the deadline would record a false 30s verdict
+  // AND release the pending entry, disarming the timer and the socket listener
+  // that were about to confirm it.
+  if (reason === 'fallback-timeout' || (reason === 'manual' && terminal)) pending.deadlineReached = true;
   // The one-shot timer can fire during a socket lookup. Let that lookup own
   // the deadline outcome rather than dropping the only fallback signal.
   if (pending.resolving) return null;
@@ -757,7 +764,11 @@ async function reconcileEntry(id) {
   }
   const uncertainFailure = entry.state === 'failed' && [SEND_INTERRUPTED_CODE, DELIVERY_UNCONFIRMED_CODE, 'NETWORK_ERROR'].includes(entry.errorCode);
   if (!['sending', 'awaiting-confirmation'].includes(entry.state) && !uncertainFailure) return entry;
-  if (!pendingConfirmations.has(id)) {
+  // Armed here means the row had no live in-process timer — it was stranded by
+  // a restart, so its real deadline is long past and this lookup is its last
+  // word. A row that already had one is still inside its 30s window.
+  const stranded = !pendingConfirmations.has(id);
+  if (stranded) {
     const unknown = entry.state === 'sending' || uncertainFailure || entry.errorCode === DELIVERY_UNCONFIRMED_CODE;
     const requestedAt = persistedSendMoment(entry);
     if (entry.state !== 'awaiting-confirmation') {
@@ -765,7 +776,7 @@ async function reconcileEntry(id) {
     }
     armConfirmation({ ...entry, requestedAt, deliveryOutcomeUnknown: unknown });
   }
-  await resolveConfirmation(id, 'manual');
+  await resolveConfirmation(id, 'manual', { terminal: stranded });
   return recoveryView(await readEntry(id));
 }
 

@@ -979,6 +979,31 @@ describe('local persistence recovery without another send', () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves the live confirmation armed when a human checks delivery early', async () => {
+    // "Check delivery" is offered the instant a row reaches awaiting-confirmation,
+    // so a user can press it seconds into the 30s window. A lookup that finds
+    // nothing THERE means "not propagated yet", not "deadline reached": recording
+    // the unresolved verdict would also release the pending entry, disarming the
+    // timer and socket listener that were about to confirm the send.
+    const entry = await createOutboxEntry({ conversationId: CONVERSATION_ID, body: 'hello there' });
+    await sendOutboxEntry(entry.id, { confirmFirstContact: true });
+    // Nothing has propagated yet: both lookups miss.
+    getMessage.mockRejectedValue(new BeeperApiError('not found', { status: 404, code: 'NOT_FOUND' }));
+    listMessagesPage.mockResolvedValue({ items: [] });
+
+    await reconcileOutboxEntry(entry.id);
+    expect(outbox.get(entry.id)).toMatchObject({ state: 'awaiting-confirmation', errorCode: null });
+    expect(getOutboxStatus().awaitingConfirmation).toBe(1);
+
+    // The message lands; the still-armed fallback confirms it.
+    getMessage.mockResolvedValue(sentMessage());
+    listMessagesPage.mockResolvedValue({ items: [sentMessage()] });
+    clock.runTimersWithDelay(CONFIRMATION_TIMEOUT_MS);
+    await flush();
+    expect(outbox.get(entry.id)).toMatchObject({ state: 'sent' });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('manually reconciles a durable stranded sending row with lookup only', async () => {
     const entry = await createOutboxEntry({ conversationId: CONVERSATION_ID, body: 'hello there' });
     outbox.get(entry.id).state = 'sending';
