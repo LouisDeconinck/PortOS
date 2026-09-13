@@ -14,6 +14,9 @@ export default function AppQuality({ app, detail = false }) {
     return { search: next.toString(), hash: '#quality-runner' };
   };
   const score = quality?.score;
+  const sortedCategories = quality?.categories
+    ? [...quality.categories].sort((a, b) => (a.score ?? Infinity) - (b.score ?? Infinity))
+    : [];
   const hasAssessments = quality?.categories?.some(category => category.assessedAt);
   const unscoredLabel = hasAssessments ? 'Quality: no qualifying score' : 'Quality: not assessed';
   const label = quality?.unavailable ? 'Quality unavailable'
@@ -67,7 +70,7 @@ export default function AppQuality({ app, detail = false }) {
           <h4 className="text-sm font-medium mb-2">Category breakdown</h4>
           <table className="w-full text-sm text-left">
             <thead className="text-gray-400 sticky top-0 bg-port-card"><tr><th className="py-2 pr-3">Category</th><th className="pr-3">Score</th><th>Evidence</th></tr></thead>
-            <tbody>{quality.categories.map(category => (
+            <tbody>{sortedCategories.map(category => (
               <Fragment key={category.id}><tr className={`border-t border-port-border align-top${score != null && category.score != null && category.coverage !== 'not-applicable' && category.score < score ? ' bg-port-warning/10' : ''}`}>
                 <th scope="row" className="py-2 pr-3 font-medium">{category.label}<Link className="block text-xs font-normal text-port-accent hover:underline" to={`/cos/schedule?task=${encodeURIComponent(category.id)}`} aria-label={`${category.label} runner`}>Runner settings</Link></th>
                 <td className="py-2 pr-3 whitespace-nowrap">{category.score == null ? '—' : `${category.score}/100`}</td>
