@@ -556,6 +556,7 @@ export * from './openapiDowngrade.js';
 export * from './orchestrationProfile.js';
 export * from './apiToolResource.js';
 export * from './mergeGateContract.js';
+export * from './preflightPlan.js';
 export * from './prDisposition.js';
 export * from './prHandbackPolicy.js';
 export * from './prReviewReport.js';
