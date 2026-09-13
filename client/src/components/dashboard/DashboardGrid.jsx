@@ -793,6 +793,28 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
     setAnnouncement(`${widgetLabel(item)} returned to its original position.`);
   }, [finishGesture]);
 
+  // A keyboard grab is modal, so it can still be open when the grid leaves the
+  // mode that offers it — Save/Cancel on the Arrange toolbar, or a rotation
+  // crossing the mobile breakpoint. The handles simply unmount, which fires no
+  // blur, so without this the abandoned ghost keeps overriding the preview and
+  // the grid goes on drawing a placement the user already cancelled.
+  useEffect(() => {
+    if (editable && !isMobile) return;
+    if (dragRef.current) finishGesture(false);
+  }, [editable, isMobile, finishGesture]);
+
+  // The handle keeps focus while the cell travels under it, so the browser has
+  // no focus change to scroll to — stepping a widget down a tall dashboard
+  // would otherwise walk it past the fold with nothing to look at. `nearest`
+  // is a no-op while the cell is already on screen. Keyboard only: a pointer
+  // drag is anchored to a cursor the user can already see.
+  useEffect(() => {
+    if (!drag?.keyboard) return;
+    containerRef.current
+      ?.querySelector(`[data-widget-id="${drag.ghost.id}"]`)
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [drag, containerRef]);
+
   useEffect(() => {
     // A keyboard grab drives itself from the handle's own keydown — installing
     // the window pointer listeners for it would let a click anywhere on the

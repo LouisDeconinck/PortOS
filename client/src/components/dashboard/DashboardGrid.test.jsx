@@ -649,6 +649,49 @@ describe('DashboardGrid keyboard arrange', () => {
     expect(fireEvent.keyDown(handle, { key: 'Tab' })).toBe(true);
   });
 
+  // A grab is modal, so it survives until something ends it — and leaving
+  // Arrange mode unmounts the handle without firing a blur. An abandoned ghost
+  // there keeps overriding the preview, so the grid draws a placement the user
+  // just cancelled.
+  it('drops a grab when the grid leaves Arrange mode', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <DashboardGrid
+        items={NARROW}
+        editable
+        onChange={onChange}
+        renderItem={(item) => <div data-testid={`widget-${item.id}`}>{item.id}</div>}
+      />
+    );
+    const handle = screen.getByLabelText('Move a');
+    handle.focus();
+    fireEvent.keyDown(handle, { key: 'Enter' });
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+
+    rerender(
+      <DashboardGrid
+        items={NARROW}
+        editable={false}
+        onChange={onChange}
+        renderItem={(item) => <div data-testid={`widget-${item.id}`}>{item.id}</div>}
+      />
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    // The ghost is gone, so the cell is drawn where the saved layout puts it.
+    expect(cellFor('a').style.left).toBe('0px');
+
+    // Re-entering Arrange finds an idle handle, not a grabbed one.
+    rerender(
+      <DashboardGrid
+        items={NARROW}
+        editable
+        onChange={onChange}
+        renderItem={(item) => <div data-testid={`widget-${item.id}`}>{item.id}</div>}
+      />
+    );
+    expect(screen.getByLabelText('Move a')).toHaveAttribute('aria-pressed', 'false');
+  });
+
   // ⌘← is browser navigation, ⌥↑ is a text jump — a chord is never a step.
   it('leaves modifier chords to the browser', () => {
     const onChange = renderGrid(NARROW);
