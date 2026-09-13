@@ -19,6 +19,7 @@ import { atomicWrite, readJSONFile, PATHS } from '../lib/fileUtils.js';
 import { isPlainObject } from '../lib/objects.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { sanitizeQuotaCards, latestFetchedAt } from '../lib/fleetQuotas.js';
+import { parseTsMs } from '../lib/lwwTimestamp.js';
 
 export const PROVIDER_QUOTAS_FILE = join(PATHS.data, 'provider-quotas.json');
 
@@ -44,6 +45,18 @@ export async function readLocalQuotaCards() {
 const claimOf = ({ fetchedAt, ...rest }) => JSON.stringify(rest);
 
 /**
+ * Is `card` a reading taken BEFORE `incumbent`?
+ *
+ * Unparseable on either side is "can't tell", which answers false — the caller
+ * then falls through to its normal last-write-wins, exactly as before.
+ */
+function isOlderReading(card, incumbent) {
+  const cardMs = parseTsMs(card?.fetchedAt);
+  const incumbentMs = parseTsMs(incumbent?.fetchedAt);
+  return cardMs !== null && incumbentMs !== null && cardMs < incumbentMs;
+}
+
+/**
  * Merge a batch of freshly-read cards into the store, keyed by family.
  *
  * MERGE, not replace: a read narrowed to one family (`?family=`) must not
@@ -65,6 +78,14 @@ export async function recordLocalQuotaCards(cards) {
     for (const card of incoming) {
       const incumbent = byFamily.get(card.family);
       if (incumbent && claimOf(incumbent) === claimOf(card)) continue;
+      // A reading taken EARLIER than the one on file is not an update. Adapters
+      // differ in how stale their source can be — a Codex card derived from
+      // rollout-log telemetry is stamped with the turn that produced it and can
+      // be days old, while the same install's live account reading is minutes
+      // old — so an older card arriving second must not retire a newer one.
+      // Federation merges these by `fetchedAt`, so letting it through would
+      // hand every peer a reading this machine already knows is superseded.
+      if (incumbent && isOlderReading(card, incumbent)) continue;
       byFamily.set(card.family, card);
       changed = true;
     }

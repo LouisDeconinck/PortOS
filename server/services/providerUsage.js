@@ -48,7 +48,8 @@ import { enabledCloudImageModes } from './imageGen/modes.js';
  *
  * Caching: the claude adapter carries its own 60s cache + single-flight inside
  * claudeCodeUsage.js; the codex adapter is a bounded local-file tail read (1-2
- * leaf dirs on a typical layout); the Antigravity/Grok adapters carry a 5-min
+ * leaf dirs on a typical layout) plus a retained copy of the last LIVE account
+ * reading, which a passive read serves whenever it is the newer of the two; the Antigravity/Grok adapters carry a 5-min
  * cache + single-flight here (`cachedScrape`) because each TUI scrape costs
  * ~10-15s (spawn + sign-in + render), too slow to repeat per page poll.
  */
@@ -215,8 +216,21 @@ export function mapCodexQuota(rateLimits, timestamp, {
       routingOverridden ? CODEX_ROUTING_CAVEAT : null,
     ].filter(Boolean).join(' '),
     ...(limits.length ? {} : { error: codexNoWindowsMessage(rateLimits, now) }),
-    fetchedAt: new Date().toISOString()
+    // The TELEMETRY's own timestamp, not the clock we read it at. Codex only
+    // emits `rate_limits` while a turn is running, so this reading can be days
+    // old — and `fetchedAt` is what every consumer ages it by: the federated
+    // merge picks the freshest reading per limit key, and the quota store keeps
+    // the newest card per family. Stamping "now" on a stale log tail made it
+    // win both, so a machine that had not run Codex since Tuesday kept
+    // overwriting a peer's (and this machine's own) current account reading.
+    fetchedAt: telemetryIso(timestamp) || new Date().toISOString()
   };
+}
+
+/** An ISO string for a telemetry timestamp, or null when it isn't a usable date. */
+function telemetryIso(timestamp) {
+  const ms = timestamp == null ? NaN : Date.parse(timestamp);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
 /**
@@ -260,31 +274,90 @@ async function listCodexRolloutFiles(codexHome) {
   return files;
 }
 
-// Passive reads stay local. A fresh request queries quota without starting a turn.
-async function fetchCurrentCodexQuota({ wait }) {
-  if (wait !== WAIT.FRESH) return fetchCodexQuota();
+/**
+ * The last live account reading, kept so a passive page load can serve it.
+ *
+ * `codexAppServer` caches readiness for 15s — long enough to coalesce one
+ * render, far too short to survive navigating away and back, which is exactly
+ * when the user sees the number regress. A live reading is retained here until
+ * something more current replaces it, and `peek` hands it back without ever
+ * spawning the app-server on a passive read.
+ */
+const codexLiveCache = createStaleWhileRevalidate({
+  ttlMs: 60 * 1000,
+  isComplete: (card) => Boolean(card?.limits?.length),
+});
+const CODEX_LIVE_KEY = 'codex:account';
+
+/** Test-only: forget the retained live Codex account reading. */
+export function __resetCodexLiveQuotaCache() {
+  codexLiveCache.clear();
+}
+
+/**
+ * Query the signed-in ChatGPT account's quota through the Codex app-server.
+ * Starts no turn and spends no tokens. Throws when the account can't answer, so
+ * the stale-while-revalidate cache backs off instead of respawning per request.
+ */
+async function readLiveCodexQuota() {
   const { getCodexAccountReadiness } = await import('./codexAppServer.js');
-  const readiness = await getCodexAccountReadiness({ fresh: true }).catch(() => null);
-  if (readiness?.rateLimits != null) {
-    const window = (value) => value && ({
-      used_percent: value.usedPercent,
-      window_minutes: value.windowDurationMins,
-      resets_at: value.resetsAt ? Date.parse(value.resetsAt) / 1000 : null,
-    });
-    const quota = mapCodexQuota({
-      primary: window(readiness.rateLimits.primary),
-      secondary: window(readiness.rateLimits.secondary),
-      plan_type: readiness.account?.planType,
-    }, null);
-    return {
-      ...quota,
-      approximate: false,
-      fetchedAt: new Date(readiness.checkedAt).toISOString(),
-      note: ['Live Codex account quota.', readCodexRoutingOverride()?.overridden === true ? CODEX_ROUTING_CAVEAT : null].filter(Boolean).join(' '),
-    };
+  const readiness = await getCodexAccountReadiness({ fresh: true });
+  if (readiness?.rateLimits == null) throw new Error('Codex reported no account rate limits');
+  const window = (value) => value && ({
+    used_percent: value.usedPercent,
+    window_minutes: value.windowDurationMins,
+    resets_at: value.resetsAt ? Date.parse(value.resetsAt) / 1000 : null,
+  });
+  const quota = mapCodexQuota({
+    primary: window(readiness.rateLimits.primary),
+    secondary: window(readiness.rateLimits.secondary),
+    plan_type: readiness.account?.planType,
+  }, null);
+  const checkedAt = Number.isFinite(readiness.checkedAt) ? readiness.checkedAt : Date.now();
+  return {
+    ...quota,
+    approximate: false,
+    fetchedAt: new Date(checkedAt).toISOString(),
+    note: ['Live Codex account quota.', readCodexRoutingOverride()?.overridden === true ? CODEX_ROUTING_CAVEAT : null].filter(Boolean).join(' '),
+  };
+}
+
+/**
+ * Pure: does this card still describe the CURRENT allowance?
+ *
+ * A retained reading whose every metered window has since reset is describing a
+ * spent allowance, the same way `codexWindowExpired` rules out a rolled-over
+ * log entry. A card with no meters at all has nothing to have expired, so it
+ * never outranks a reading that does.
+ */
+const codexCardUnexpired = (card, now) =>
+  (card?.limits || []).some((limit) => !limit.resetsAt || Date.parse(limit.resetsAt) > now);
+
+/**
+ * Passive reads stay local; a fresh request queries the account without
+ * starting a turn.
+ *
+ * The two sources disagree by design: the app-server knows the account's
+ * current state, while the rollout logs only know what the last Codex TURN was
+ * told — which may be days stale. Serving the log tail unconditionally on
+ * passive reads is what made the card snap back to an old percentage as soon as
+ * the user navigated away from an explicit Refresh, so a retained live reading
+ * wins whenever it is genuinely the newer of the two.
+ */
+async function fetchCurrentCodexQuota({ wait = WAIT.CACHED } = {}) {
+  if (wait === WAIT.FRESH) {
+    const live = await codexLiveCache.read(CODEX_LIVE_KEY, readLiveCodexQuota, { wait }).catch(() => null);
+    if (live) return live;
+    const quota = await fetchCodexQuota();
+    return { ...quota, note: `Live Codex quota refresh unavailable; showing local telemetry. ${quota.note || ''}`.trim() };
   }
-  const quota = await fetchCodexQuota();
-  return { ...quota, note: `Live Codex quota refresh unavailable; showing local telemetry. ${quota.note || ''}`.trim() };
+  const now = Date.now();
+  const live = codexLiveCache.peek(CODEX_LIVE_KEY);
+  const quota = await fetchCodexQuota({ now });
+  if (!live || !codexCardUnexpired(live, now)) return quota;
+  const liveMs = Date.parse(live.fetchedAt);
+  const logMs = Date.parse(quota.fetchedAt);
+  return Number.isFinite(liveMs) && (!Number.isFinite(logMs) || liveMs >= logMs) ? live : quota;
 }
 
 /** Exported for tests (which point `codexHome` at a fixture tree). */

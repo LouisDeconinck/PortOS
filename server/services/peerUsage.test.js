@@ -465,6 +465,20 @@ describe('federated subscription-quota readings', () => {
     expect((await recordLocalQuotaCards([quotaCard({ limits: [] })])).changed).toBe(true);
   });
 
+  // Codex cards are stamped with the TELEMETRY that produced them, not the
+  // clock they were read at, so a rollout-log tail can arrive AFTER a live
+  // account reading while describing an older moment. Letting it through would
+  // publish a reading this machine already knows is superseded.
+  it('keeps the newer reading when an older card for the same family arrives after it', async () => {
+    const spent = [{ key: 'week', label: 'Current week', percentUsed: 100, percentRemaining: 0, resetsAt: null, timezone: null }];
+    const live = quotaCard({ family: 'codex', label: 'Codex', fetchedAt: '2026-08-31T12:00:00.000Z', limits: spent });
+    const stale = quotaCard({ family: 'codex', label: 'Codex', fetchedAt: '2026-08-29T09:00:00.000Z' });
+    expect((await recordLocalQuotaCards([live])).changed).toBe(true);
+    expect((await recordLocalQuotaCards([stale])).changed).toBe(false);
+    const { quotas } = await readLocalQuotaCards();
+    expect(quotas.find((q) => q.family === 'codex').limits[0].percentUsed).toBe(100);
+  });
+
   it('merges a narrowed read instead of retiring the families it skipped', async () => {
     await recordLocalQuotaCards([quotaCard(), quotaCard({ family: 'codex', label: 'Codex' })]);
     await recordLocalQuotaCards([quotaCard({ activity: [{ period: 'Last 24h', requests: 99, sessions: 3, notes: [] }] })]);

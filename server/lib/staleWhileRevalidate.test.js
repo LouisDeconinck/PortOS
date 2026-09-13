@@ -126,6 +126,25 @@ describe('createStaleWhileRevalidate', () => {
     expect(await cache.read('k', produce)).toBe('full'); // …and revalidated
   });
 
+  // For a caller that has a second, cheap source and picks between them by the
+  // readings' own `fetchedAt`: the expensive reading is still the answer long
+  // after the TTL lapses, and paying for a respawn to re-confirm it is the cost
+  // `read` cannot avoid.
+  it('peeks the last reading without producing one, and without applying the TTL', async () => {
+    vi.useFakeTimers();
+    const cache = createStaleWhileRevalidate({ ttlMs: TTL });
+    const produce = vi.fn().mockResolvedValue('reading');
+    expect(cache.peek('k')).toBeUndefined(); // cold: nothing to hand back
+
+    await cache.read('k', produce);
+    vi.advanceTimersByTime(TTL * 10);
+    expect(cache.peek('k')).toBe('reading');
+    expect(produce).toHaveBeenCalledTimes(1);
+
+    cache.clear('k');
+    expect(cache.peek('k')).toBeUndefined();
+  });
+
   it('keys entries independently and clears them', async () => {
     const cache = createStaleWhileRevalidate({ ttlMs: TTL });
     await cache.read('a', () => Promise.resolve(1));
