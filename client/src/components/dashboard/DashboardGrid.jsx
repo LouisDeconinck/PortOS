@@ -649,8 +649,15 @@ export default function DashboardGrid({ items, editable, onChange, onLayoutModeC
   );
   // Read by the drag handlers, which must not re-bind every time a widget
   // re-measures (that would churn every memoized cell mid-gesture).
+  //
+  // Held at the SETTLED pack while a gesture is live: `rects` packs
+  // `previewItems`, which folds the ghost in. Both readers below want where the
+  // cards really are, not where the preview is drawing them. A keyboard grab is
+  // modal and stays open indefinitely, so a pointer drag on a sibling handle
+  // (or a pin release) can land mid-gesture and would otherwise compute its
+  // rank against displaced tops and commit a card to the wrong slot.
   const rectsRef = useRef(rects);
-  rectsRef.current = rects;
+  if (!drag) rectsRef.current = rects;
 
   const containerHeight = useMemo(() => {
     let bottom = 0;
