@@ -1759,11 +1759,11 @@ describe('pr-reviewer security preflight wiring', () => {
 
   it('carries a stolen on-demand request\'s PR target through the idle-review path', () => {
     const start = GEN_SRC.indexOf('const appRequests = onDemandRequests.filter(');
-    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n  return { task, pendingPerpetualDispatch };', start));
+    const body = GEN_SRC.slice(start, GEN_SRC.indexOf('\n  return { task, pendingPerpetualDispatch, preflightCardId: stolenCardId };', start));
     // The idle tier can consume a queued on-demand request instead of Priority 0.
     // Dropping the target there re-widens a one-row click into a full sweep.
     expect(body).toContain('targetPullRequest = request.targetPullRequest ?? null');
-    expect(body).toMatch(/prepareManagedAppImprovementTask\([\s\S]*?targetPullRequest\n/);
+    expect(body).toMatch(/prepareManagedAppImprovementTask\([\s\S]*?targetPullRequest,?\n/);
   });
 
   it('keeps a targeted run distinguishable from the sweep in the duplicate guard', () => {

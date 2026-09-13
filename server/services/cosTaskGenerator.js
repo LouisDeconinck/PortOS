@@ -72,7 +72,7 @@ import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js
 // reads the same set back via isClaimFlowTask().
 import { CLAIM_FLOW_TASK_TYPES } from '../lib/claimFlowTaskTypes.js';
 import { ServerError } from '../lib/errorHandler.js';
-import { isReconcileDrainTaskType } from './taskScheduleConstants.js';
+import { isReconcileDrainTaskType, isUserOriginRequest } from './taskScheduleConstants.js';
 import { isProgrammaticScheduledTaskType, requiresInstallWideTarget } from './taskScheduleRegistry.js';
 import {
   appendClaimOverrideContext,
@@ -1026,11 +1026,20 @@ async function spawnPriority4IdleReview(ctx) {
     const freshCosTasks = await getCosTasks();
     const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
     if (pendingSystemTasks === 0) {
-      const { task: idleTask, pendingPerpetualDispatch } = await generateIdleReviewTask(state);
-      if (idleTask && canSpawnTask(idleTask, autonomousSlotCeiling)) {
+      const { task: idleTask, pendingPerpetualDispatch, preflightCardId } = await generateIdleReviewTask(state);
+      const admitted = idleTask && canSpawnTask(idleTask, autonomousSlotCeiling);
+      if (admitted) {
         await recordDeferredPerpetualDispatch(pendingPerpetualDispatch, await import('./taskSchedule.js'));
         tasksToSpawn.push(idleTask);
         trackSpawn(idleTask);
+      }
+      // This tier may have STOLEN a human's on-demand request (see
+      // generateManagedAppImprovementTask). Closing its card is this tier's job
+      // because only here is the spawn decision final. Guarded so an ordinary
+      // idle tick — which has no card — pays neither the import nor a task read.
+      if (preflightCardId) {
+        const { finishPreflightDispatch } = await import('./preflightTaskCard.js');
+        await finishPreflightDispatch(preflightCardId, admitted ? idleTask.id : null);
       }
     }
   }
@@ -1272,7 +1281,7 @@ export async function evaluateTasks(options) {
 export async function generateIdleReviewTask(state, { ignoreTaskId = null } = {}) {
   if (!isImprovementEnabled(state)) {
     emitLog('debug', 'Improvement tasks are disabled');
-    return { task: null, pendingPerpetualDispatch: null };
+    return { task: null, pendingPerpetualDispatch: null, preflightCardId: null };
   }
 
   // Get all active (non-archived) managed apps (including PortOS)
@@ -1300,17 +1309,17 @@ export async function generateIdleReviewTask(state, { ignoreTaskId = null } = {}
       });
 
       emitLog('info', `Generating improvement task for ${nextApp.name}`, { appId: nextApp.id });
-      const { task: idleTask, pendingPerpetualDispatch } = await generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId });
+      const { task: idleTask, pendingPerpetualDispatch, preflightCardId } = await generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId });
       // Only bind the active marker once a real task exists.
       if (idleTask) {
         await bindAppReviewAgent(nextApp.id, `idle-review-${Date.now()}`);
       }
-      return { task: idleTask, pendingPerpetualDispatch };
+      return { task: idleTask, pendingPerpetualDispatch, preflightCardId };
     }
   }
 
   emitLog('debug', 'No idle tasks available');
-  return { task: null, pendingPerpetualDispatch: null };
+  return { task: null, pendingPerpetualDispatch: null, preflightCardId: null };
 }
 
 /**
@@ -1945,10 +1954,19 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // silently promote the user's one-row click into a full-repo review — the
   // same widening the perpetual-refill skip guards against on the other side.
   let targetPullRequest = null;
+  // The programmatic-phase card a human's "Run" already opened, when this path
+  // is the one that ends up serving that Run. Stealing the request means
+  // inheriting its card: the on-demand drain will never see the request again,
+  // so if this path reports nothing the card is stranded at "Waiting for a free
+  // task slot" — while the agent it produced is visibly already working — until
+  // the orphan sweep mislabels it `interrupted` 15 minutes later.
+  let stolenCardId = null;
 
   if (appRequests.length > 0) {
     const request = appRequests[0];
     targetPullRequest = request.targetPullRequest ?? null;
+    const { preflightCardId } = await import('./preflightTaskCard.js');
+    stolenCardId = isUserOriginRequest(request) ? preflightCardId(request.id) : null;
     await taskSchedule.clearOnDemandRequest(request.id);
     // Only a human "Run" may clear the drain's brakes (park state, dispatch
     // count); the policy lives in applyOnDemandRunResets so this idle-review
@@ -1965,7 +1983,7 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
 
     if (!nextTypeResult) {
       emitLog('info', `No app improvement tasks are eligible for ${app.name} based on schedule`);
-      return { task: null, pendingPerpetualDispatch: null };
+      return { task: null, pendingPerpetualDispatch: null, preflightCardId: null };
     }
 
     nextType = nextTypeResult.taskType;
@@ -1992,14 +2010,21 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // spawn; the per-type generator does not record execution itself.
   const prepared = await prepareManagedAppImprovementTask(nextType, app, state, {
     ignoreTaskId,
-    targetPullRequest
+    targetPullRequest,
+    // The deterministic pre-agent work (pr-reviewer's security preflight)
+    // reports into the stolen Run's card as it runs, exactly as it does on the
+    // on-demand drain — this is the whole reason the card is opened early.
+    preflightCardId: stolenCardId
   });
   const task = prepared?.task ?? null;
   const pendingPerpetualDispatch = prepared?.pendingPerpetualDispatch ?? null;
   // Idle-review can steal a queued on-demand request for this app. That
   // request is still a user Run — apply the same consent as Priority 0.
   if (selectionReason === 'on-demand') applyOnDemandConsent(task);
-  return { task, pendingPerpetualDispatch };
+  // The card is closed by whoever rules on the task (the spawn tier), not here:
+  // a task this returns can still be refused a slot, and a card closed
+  // `handed-off` would then name an agent that never started.
+  return { task, pendingPerpetualDispatch, preflightCardId: stolenCardId };
 }
 
 /**

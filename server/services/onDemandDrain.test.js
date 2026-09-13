@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   recordPreflightOutcome: vi.fn(async () => null),
   reportPreflightStep: vi.fn(async () => {}),
   finishPreflightCard: vi.fn(async () => null),
+  finishPreflightDispatch: vi.fn(async () => null),
 }));
 
 vi.mock('./apps.js', () => ({ getActiveApps: (...a) => mocks.getActiveApps(...a) }));
@@ -74,6 +75,7 @@ vi.mock('./preflightTaskCard.js', () => ({
   recordPreflightOutcome: (...a) => mocks.recordPreflightOutcome(...a),
   reportPreflightStep: (...a) => mocks.reportPreflightStep(...a),
   finishPreflightCard: (...a) => mocks.finishPreflightCard(...a),
+  finishPreflightDispatch: (...a) => mocks.finishPreflightDispatch(...a),
 }));
 vi.mock('./cosTaskGenerator.js', () => ({
   prepareManagedAppImprovementTask: (...a) => mocks.prepareManagedAppImprovementTask(...a),
@@ -523,10 +525,7 @@ describe('preflight task card', () => {
     mocks.getOnDemandRequests.mockResolvedValue([appRequest()]);
     const { adapter } = generatorAdapter();
     await drainOnDemandRequests({ state: STATE }, adapter);
-    expect(mocks.reportPreflightStep).toHaveBeenCalledWith('preflight-req-1', 'dispatch');
-    expect(mocks.finishPreflightCard).toHaveBeenCalledWith('preflight-req-1', {
-      outcome: 'handed-off', resultTaskId: 'persisted-1',
-    });
+    expect(mocks.finishPreflightDispatch).toHaveBeenCalledWith('preflight-req-1', 'persisted-1');
   });
 
   it.each([

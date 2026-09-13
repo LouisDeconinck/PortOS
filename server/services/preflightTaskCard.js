@@ -150,6 +150,27 @@ export async function finishPreflightCard(cardId, { outcome, reason = null, note
 }
 
 /**
+ * Close a card once the spawn decision on whatever its preflight produced is
+ * final. `resultTaskId` names the task that will run, or is null when the run
+ * produced none — a gate skipped it, or the spawn tier declined it.
+ *
+ * One helper because two engines reach this same point: the on-demand drain,
+ * and the idle-review path that STEALS a queued request for its app
+ * (cosTaskGenerator#generateManagedAppImprovementTask). The steal used to
+ * report nothing at all, so a card opened by a human's "Run" sat at "Waiting
+ * for a free task slot" — with its own agent visibly already working — until
+ * the 15-minute orphan sweep mislabelled it `interrupted`. Keeping the
+ * `dispatch` step and the `handed-off` close in ONE place is what stops the
+ * two engines drifting into telling different stories about the same run.
+ */
+export async function finishPreflightDispatch(cardId, resultTaskId = null) {
+  if (!cardId) return null;
+  if (!resultTaskId) return finishPreflightCard(cardId, { outcome: 'nothing-to-do' });
+  await reportPreflightStep(cardId, 'dispatch');
+  return finishPreflightCard(cardId, { outcome: 'handed-off', resultTaskId });
+}
+
+/**
  * Record a terminal preflight outcome whether or not a card was ever opened.
  *
  * A run that failed its preflight needs a durable record for the user and for

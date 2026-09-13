@@ -10,6 +10,7 @@ const { addTask, getTaskById, updateTask } = await import('./cosTaskStore.js');
 const {
   PREFLIGHT_CARD_STALE_MS,
   finishPreflightCard,
+  finishPreflightDispatch,
   isPreflightCard,
   isStalePreflightCard,
   preflightCardId,
@@ -100,6 +101,45 @@ describe('preflightTaskCard', () => {
     await recordPreflightOutcome({ requestId: 'demand-1', taskType: 'pr-reviewer', outcome: 'failed', reason: 'security-guard-unavailable' });
     expect(updateTask).toHaveBeenCalledTimes(1);
     expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('marks dispatch and hands off in one step, so the two engines cannot tell different stories', async () => {
+    const { createPreflightState } = await import('../lib/preflightPlan.js');
+    // Read-back reflects the last write, as the real store does: the close reads
+    // the card the dispatch report just persisted, which is the whole point of
+    // the two happening in one helper.
+    let stored = createPreflightState({ requestId: 'demand-1', taskType: 'pr-reviewer' });
+    getTaskById.mockImplementation(async () => cardFor(stored));
+    updateTask.mockImplementation(async (id, updates) => {
+      stored = updates.metadata.preflight;
+      return cardFor(stored);
+    });
+    await finishPreflightDispatch(preflightCardId('demand-1'), 'app-improve-1');
+    // The dispatch report and the close are two writes; what matters is that the
+    // closed card carries BOTH — a handed-off card whose dispatch step never ran
+    // renders as a run that skipped its last step.
+    const [, closed] = updateTask.mock.calls.at(-1);
+    expect(closed.status).toBe('completed');
+    expect(closed.metadata.preflight.outcome).toBe('handed-off');
+    expect(closed.metadata.preflightResultTaskId).toBe('app-improve-1');
+    const dispatchStep = closed.metadata.preflight.steps.find(step => step.key === 'dispatch');
+    expect(dispatchStep.status).toBe('done');
+  });
+
+  it('closes as nothing-to-do when the run produced no task, rather than naming an agent that never started', async () => {
+    const { createPreflightState } = await import('../lib/preflightPlan.js');
+    getTaskById.mockResolvedValue(cardFor(createPreflightState({ requestId: 'demand-1', taskType: 'pr-reviewer' })));
+    await finishPreflightDispatch(preflightCardId('demand-1'), null);
+    const [, closed] = updateTask.mock.calls.at(-1);
+    expect(closed.metadata.preflight.outcome).toBe('nothing-to-do');
+    expect(closed.metadata.preflightResultTaskId).toBeUndefined();
+    expect(closed.metadata.preflight.steps.find(step => step.key === 'dispatch').status).toBe('skipped');
+  });
+
+  it('reads nothing for an uncarded run, so an automated origin pays no task lookup', async () => {
+    await finishPreflightDispatch(null, 'app-improve-1');
+    expect(getTaskById).not.toHaveBeenCalled();
+    expect(updateTask).not.toHaveBeenCalled();
   });
 
   it('treats a card as stale only once nothing could still be running it', async () => {

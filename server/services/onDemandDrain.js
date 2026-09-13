@@ -35,7 +35,7 @@ import { markAppReviewCooldown, bindAppReviewAgent } from './appActivity.js';
 import { isManualOnDemandRequest, onDemandRequestMetadata } from '../lib/quotaBurnOrigin.js';
 import { isUserOriginRequest } from './taskScheduleConstants.js';
 import { addTask, reviveBlockedTask } from './cosTaskStore.js';
-import { finishPreflightCard, preflightCardId, reportPreflightStep, startPreflightCard } from './preflightTaskCard.js';
+import { finishPreflightCard, finishPreflightDispatch, preflightCardId, reportPreflightStep, startPreflightCard } from './preflightTaskCard.js';
 
 /**
  * Drain the on-demand request queue, generating + persisting a task per request
@@ -251,8 +251,7 @@ export async function drainOnDemandRequests(ctx, adapter) {
       // it to `completed` — so without excluding it the re-issued claim is
       // rejected as a duplicate of the run that just finished and the drain stalls.
       const persisted = await addTask(task, 'internal', { raw: true, ...addTaskOptions, suppressDequeue: true });
-      await reportPreflightStep(cardId, 'dispatch');
-      await finishPreflightCard(cardId, { outcome: 'handed-off', resultTaskId: persisted?.id || task.id });
+      await finishPreflightDispatch(cardId, persisted?.id || task.id);
       if (!persisted?.duplicate) {
         await recordDeferredPerpetualDispatch(pendingPerpetualDispatch, taskScheduleMod);
         emitSpawn(task);

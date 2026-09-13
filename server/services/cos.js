@@ -1114,15 +1114,24 @@ async function spawnDequeuePriority3IdleReview(ctx) {
   const freshCosTasks = await getCosTasks();
   const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
   if (pendingSystemTasks === 0) {
-    const { task: idleTask, pendingPerpetualDispatch } = await generateIdleReviewTask(state, { ignoreTaskId });
+    const { task: idleTask, pendingPerpetualDispatch, preflightCardId } = await generateIdleReviewTask(state, { ignoreTaskId });
     // Committed tier — `generateIdleReviewTask` has already bound the app-review
     // marker and advanced the 30-minute cooldown, and only `holdTask` releases
     // that marker, which requires the emit. A denial would leave the app reading
     // "in review" indefinitely (#978's mode). See canSpawnCommitted (#4834).
-    if (idleTask && capacity.canSpawnCommitted(idleTask, ctx.autonomousSpawnCeiling)) {
+    const admitted = idleTask && capacity.canSpawnCommitted(idleTask, ctx.autonomousSpawnCeiling);
+    if (admitted) {
       await recordDeferredPerpetualDispatch(pendingPerpetualDispatch, await import('./taskSchedule.js'));
       cosEvents.emit('task:ready', idleTask);
       capacity.trackSpawn(idleTask);
+    }
+    // This tier may have STOLEN a human's on-demand request (see
+    // generateManagedAppImprovementTask). Closing its card is this tier's job
+    // because only here is the spawn decision final. Guarded so an ordinary
+    // idle tick — which has no card — pays neither the import nor a task read.
+    if (preflightCardId) {
+      const { finishPreflightDispatch } = await import('./preflightTaskCard.js');
+      await finishPreflightDispatch(preflightCardId, admitted ? idleTask.id : null);
     }
   }
 }

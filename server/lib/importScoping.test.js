@@ -458,7 +458,11 @@ describe('deferred imports stay deferred (#6156)', () => {
 // module-organization rule requires, instantiates one more module in every
 // closure that reaches the barrel. There is nothing to narrow — the leaf pulls
 // nothing — so raise by exactly that delta and keep the existing headroom.
-const MAX_STATIC_INSTANTIATIONS = 103520;
+// The idle-review steal's card hand-off adds one test file and no module: it
+// reaches cosTaskGenerator.js through `await import()` (after its vi.mocks, as
+// that suite must), so its static closure is itself alone and the measured
+// delta is +1. Nothing to narrow — a deferred import IS the narrow form.
+const MAX_STATIC_INSTANTIATIONS = 103521;
 
 
 const SKIP_DIRS = new Set(['node_modules', 'coverage', 'dist', 'data']);
