@@ -28,6 +28,7 @@
 
 import { applyPreflightStep, createPreflightState, finalizePreflight, preflightHeadline } from '../lib/preflightPlan.js';
 import { addTask, getTaskById, updateTask } from './cosTaskStore.js';
+import { isUserOriginRequest } from './taskScheduleConstants.js';
 
 /**
  * How long a card may sit `in_progress` before the orphan sweep calls it
@@ -125,9 +126,18 @@ export function preflightReporter(cardId) {
  * row reads that key to paint its "review failed" state — the same contract the
  * standalone failure task used before the card existed.
  */
-export async function finishPreflightCard(cardId, { outcome, reason = null, note = null, resultTaskId = null } = {}) {
+export async function finishPreflightCard(cardId, options = {}) {
   const preflight = await readPreflight(cardId);
   if (!preflight) return null;
+  return closeReadPreflight(cardId, preflight, options);
+}
+
+/**
+ * The close itself, against a preflight the caller has ALREADY read — so a
+ * caller that advanced a step first persists the step and the close as one
+ * write rather than re-reading the card it just wrote.
+ */
+async function closeReadPreflight(cardId, preflight, { outcome, reason = null, note = null, resultTaskId = null } = {}) {
   const next = finalizePreflight(preflight, { outcome, reason, note, resultTaskId });
   // `finalizePreflight` returns the same object for an already-closed card, and
   // a second close is expected: the drain closes generically after a path that
@@ -148,6 +158,44 @@ export async function finishPreflightCard(cardId, { outcome, reason = null, note
     return null;
   });
 }
+
+/**
+ * Close a card once the spawn decision on whatever its preflight produced is
+ * final. `resultTaskId` names the task that will run, or is null when the run
+ * produced none — a gate skipped it, or the spawn tier declined it.
+ *
+ * THE reason this is one helper: every engine that serves a user's on-demand
+ * request reaches this same point, and each used to spell it out for itself.
+ * The idle-review path that STEALS a queued request
+ * (cosTaskGenerator#generateManagedAppImprovementTask) spelled out nothing at
+ * all, so a card opened by a human's "Run" sat at "Waiting for a free task
+ * slot" — with its own agent visibly already working — until the orphan sweep
+ * mislabelled it `interrupted` (PREFLIGHT_CARD_STALE_MS later). Marking
+ * `dispatch` and closing `handed-off` in ONE place is what stops the engines
+ * drifting into telling different stories about the same run.
+ *
+ * One read-modify-write, not two: the step and the close land in the same
+ * persisted card, so the Tasks page never renders the frame in between.
+ */
+export async function finishPreflightDispatch(cardId, resultTaskId = null) {
+  const preflight = await readPreflight(cardId);
+  if (!preflight) return null;
+  return resultTaskId
+    ? closeReadPreflight(cardId, applyPreflightStep(preflight, 'dispatch'), { outcome: 'handed-off', resultTaskId })
+    : closeReadPreflight(cardId, preflight, { outcome: 'nothing-to-do' });
+}
+
+/**
+ * The card id for a request, or null when the request is not a human's Run.
+ *
+ * Derived rather than stamped on the request (see `startPreflightCard`), and
+ * one export rather than the ternary at each engine: "only a USER origin is
+ * carded" is a policy the card owner decides, and it has to match the gate
+ * `startPreflightCard` is called behind or an engine reports into a card that
+ * was never opened.
+ */
+export const cardIdForRequest = (request) =>
+  (isUserOriginRequest(request) ? preflightCardId(request.id) : null);
 
 /**
  * Record a terminal preflight outcome whether or not a card was ever opened.

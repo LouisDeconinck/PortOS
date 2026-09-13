@@ -48,7 +48,7 @@ import { getActiveApps, getAppTaskTypeOverrides } from './apps.js';
 // The single Priority-0 on-demand loop body, shared with the dequeueNextTask
 // engine in cos.js so the two can no longer drift (#6618).
 import { drainOnDemandRequests } from './onDemandDrain.js';
-import { isIdleTierEligible } from './cosDequeue.js';
+import { closeStolenIdleReviewCard, isIdleTierEligible } from './cosDequeue.js';
 import { resolveAgentProviderPin } from './appTaskProviderPin.js';
 import { getTaskTypeConfidence } from './taskLearning.js';
 import { classifySafetyKind, requiresSafetyApproval } from './taskLearning/safetyKind.js';
@@ -1026,12 +1026,16 @@ async function spawnPriority4IdleReview(ctx) {
     const freshCosTasks = await getCosTasks();
     const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
     if (pendingSystemTasks === 0) {
-      const { task: idleTask, pendingPerpetualDispatch } = await generateIdleReviewTask(state);
-      if (idleTask && canSpawnTask(idleTask, autonomousSlotCeiling)) {
+      const { task: idleTask, pendingPerpetualDispatch, preflightCardId } = await generateIdleReviewTask(state);
+      const admitted = idleTask && canSpawnTask(idleTask, autonomousSlotCeiling);
+      if (admitted) {
         await recordDeferredPerpetualDispatch(pendingPerpetualDispatch, await import('./taskSchedule.js'));
         tasksToSpawn.push(idleTask);
         trackSpawn(idleTask);
       }
+      // This tier may have STOLEN a human's on-demand request. Closing its card is
+      // the tier's job because only here is the admission decision final.
+      await closeStolenIdleReviewCard(preflightCardId, admitted ? idleTask : null);
     }
   }
 }
@@ -1272,7 +1276,7 @@ export async function evaluateTasks(options) {
 export async function generateIdleReviewTask(state, { ignoreTaskId = null } = {}) {
   if (!isImprovementEnabled(state)) {
     emitLog('debug', 'Improvement tasks are disabled');
-    return { task: null, pendingPerpetualDispatch: null };
+    return { task: null, pendingPerpetualDispatch: null, preflightCardId: null };
   }
 
   // Get all active (non-archived) managed apps (including PortOS)
@@ -1300,17 +1304,17 @@ export async function generateIdleReviewTask(state, { ignoreTaskId = null } = {}
       });
 
       emitLog('info', `Generating improvement task for ${nextApp.name}`, { appId: nextApp.id });
-      const { task: idleTask, pendingPerpetualDispatch } = await generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId });
+      const { task: idleTask, pendingPerpetualDispatch, preflightCardId } = await generateManagedAppImprovementTask(nextApp, state, { ignoreTaskId });
       // Only bind the active marker once a real task exists.
       if (idleTask) {
         await bindAppReviewAgent(nextApp.id, `idle-review-${Date.now()}`);
       }
-      return { task: idleTask, pendingPerpetualDispatch };
+      return { task: idleTask, pendingPerpetualDispatch, preflightCardId };
     }
   }
 
   emitLog('debug', 'No idle tasks available');
-  return { task: null, pendingPerpetualDispatch: null };
+  return { task: null, pendingPerpetualDispatch: null, preflightCardId: null };
 }
 
 /**
@@ -1945,10 +1949,16 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // silently promote the user's one-row click into a full-repo review — the
   // same widening the perpetual-refill skip guards against on the other side.
   let targetPullRequest = null;
+  // The card a human's "Run" already opened, when this steal is serving one —
+  // stealing the request means inheriting its card, because the on-demand drain
+  // will never see that request again. See `finishPreflightDispatch`.
+  let stolenCardId = null;
 
   if (appRequests.length > 0) {
     const request = appRequests[0];
     targetPullRequest = request.targetPullRequest ?? null;
+    const { cardIdForRequest } = await import('./preflightTaskCard.js');
+    stolenCardId = cardIdForRequest(request);
     await taskSchedule.clearOnDemandRequest(request.id);
     // Only a human "Run" may clear the drain's brakes (park state, dispatch
     // count); the policy lives in applyOnDemandRunResets so this idle-review
@@ -1965,7 +1975,10 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
 
     if (!nextTypeResult) {
       emitLog('info', `No app improvement tasks are eligible for ${app.name} based on schedule`);
-      return { task: null, pendingPerpetualDispatch: null };
+      // `stolenCardId`, never a literal null: this branch happens to be the one
+      // where no steal occurred, but a later early return added above it would
+      // strand the card all over again.
+      return { task: null, pendingPerpetualDispatch: null, preflightCardId: stolenCardId };
     }
 
     nextType = nextTypeResult.taskType;
@@ -1992,14 +2005,21 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // spawn; the per-type generator does not record execution itself.
   const prepared = await prepareManagedAppImprovementTask(nextType, app, state, {
     ignoreTaskId,
-    targetPullRequest
+    targetPullRequest,
+    // The deterministic pre-agent work (pr-reviewer's security preflight)
+    // reports into the stolen Run's card as it runs, exactly as it does on the
+    // on-demand drain — this is the whole reason the card is opened early.
+    preflightCardId: stolenCardId
   });
   const task = prepared?.task ?? null;
   const pendingPerpetualDispatch = prepared?.pendingPerpetualDispatch ?? null;
   // Idle-review can steal a queued on-demand request for this app. That
   // request is still a user Run — apply the same consent as Priority 0.
   if (selectionReason === 'on-demand') applyOnDemandConsent(task);
-  return { task, pendingPerpetualDispatch };
+  // The card is closed by whoever rules on the task (the spawn tier), not here:
+  // a task this returns can still be refused a slot, and a card closed
+  // `handed-off` would then name an agent that never started.
+  return { task, pendingPerpetualDispatch, preflightCardId: stolenCardId };
 }
 
 /**

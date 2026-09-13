@@ -33,9 +33,8 @@ import { getActiveApps } from './apps.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled } from './cosState.js';
 import { markAppReviewCooldown, bindAppReviewAgent } from './appActivity.js';
 import { isManualOnDemandRequest, onDemandRequestMetadata } from '../lib/quotaBurnOrigin.js';
-import { isUserOriginRequest } from './taskScheduleConstants.js';
 import { addTask, reviveBlockedTask } from './cosTaskStore.js';
-import { finishPreflightCard, preflightCardId, reportPreflightStep, startPreflightCard } from './preflightTaskCard.js';
+import { cardIdForRequest, finishPreflightCard, finishPreflightDispatch, reportPreflightStep, startPreflightCard } from './preflightTaskCard.js';
 
 /**
  * Drain the on-demand request queue, generating + persisting a task per request
@@ -96,13 +95,14 @@ export async function drainOnDemandRequests(ctx, adapter) {
 
   for (const request of onDemandRequests) {
     // This request's programmatic-phase card, or null for the automated origins
-    // that are never carded. Derived rather than stamped on the request: the id
-    // is a pure function of the request id, so every report and close site below
-    // needs no branch of its own — a null id short-circuits each of them BEFORE
-    // it reads the task file, which matters because an automated refill drain
-    // would otherwise pay a cold whole-file parse per request just to discover
-    // it has no card.
-    const cardId = isUserOriginRequest(request) ? preflightCardId(request.id) : null;
+    // that are never carded — `cardIdForRequest` owns that policy, so this
+    // engine and the idle-review steal cannot disagree about who gets a card.
+    // Derived rather than stamped on the request, so every report and close site
+    // below needs no branch of its own: a null id short-circuits each of them
+    // BEFORE it reads the task file, which matters because an automated refill
+    // drain would otherwise pay a cold whole-file parse per request just to
+    // discover it has no card.
+    const cardId = cardIdForRequest(request);
 
     // Already handled above (and its request cleared) — `onDemandRequests` is
     // a snapshot taken before that drain.
@@ -251,8 +251,7 @@ export async function drainOnDemandRequests(ctx, adapter) {
       // it to `completed` — so without excluding it the re-issued claim is
       // rejected as a duplicate of the run that just finished and the drain stalls.
       const persisted = await addTask(task, 'internal', { raw: true, ...addTaskOptions, suppressDequeue: true });
-      await reportPreflightStep(cardId, 'dispatch');
-      await finishPreflightCard(cardId, { outcome: 'handed-off', resultTaskId: persisted?.id || task.id });
+      await finishPreflightDispatch(cardId, persisted?.id || task.id);
       if (!persisted?.duplicate) {
         await recordDeferredPerpetualDispatch(pendingPerpetualDispatch, taskScheduleMod);
         emitSpawn(task);
@@ -281,7 +280,7 @@ export async function drainOnDemandRequests(ctx, adapter) {
     // refill with no task) still owes the card a close — a card left open would
     // keep animating until the orphan sweep reaped it. Already-closed cards are
     // a no-op, so the specific reason each path recorded above survives.
-    await finishPreflightCard(cardId, { outcome: 'nothing-to-do' });
+    await finishPreflightDispatch(cardId);
     if (userInitiated) {
       const preparationMs = Math.round(performance.now() - preparationStartedAt);
       emitLog('info', `On-demand preparation finished: ${request.taskType} (${request.id}) — queue wait ${queueWaitMs ?? 'unknown'}ms, preparation ${preparationMs}ms, ${task ? 'task generated' : 'no task generated'}`, {

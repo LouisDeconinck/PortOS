@@ -10,6 +10,7 @@ const { addTask, getTaskById, updateTask } = await import('./cosTaskStore.js');
 const {
   PREFLIGHT_CARD_STALE_MS,
   finishPreflightCard,
+  finishPreflightDispatch,
   isPreflightCard,
   isStalePreflightCard,
   preflightCardId,
@@ -100,6 +101,38 @@ describe('preflightTaskCard', () => {
     await recordPreflightOutcome({ requestId: 'demand-1', taskType: 'pr-reviewer', outcome: 'failed', reason: 'security-guard-unavailable' });
     expect(updateTask).toHaveBeenCalledTimes(1);
     expect(addTask).not.toHaveBeenCalled();
+  });
+
+  it('marks dispatch and hands off in a SINGLE write, so the card never renders a half-done frame', async () => {
+    const { createPreflightState } = await import('../lib/preflightPlan.js');
+    getTaskById.mockResolvedValue(cardFor(createPreflightState({ requestId: 'demand-1', taskType: 'pr-reviewer' })));
+    await finishPreflightDispatch(preflightCardId('demand-1'), 'app-improve-1');
+    // One read-modify-write: a second one would re-read the card it just wrote
+    // and emit a second tasks:changed showing a dispatched-but-unfinished card.
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    const [, closed] = updateTask.mock.calls[0];
+    expect(closed.status).toBe('completed');
+    expect(closed.metadata.preflight.outcome).toBe('handed-off');
+    expect(closed.metadata.preflightResultTaskId).toBe('app-improve-1');
+    // The dispatch step is DONE in that same write — a handed-off card whose
+    // last step never ran renders as a run that skipped it.
+    expect(closed.metadata.preflight.steps.find(step => step.key === 'dispatch').status).toBe('done');
+  });
+
+  it('closes as nothing-to-do when the run produced no task, rather than naming an agent that never started', async () => {
+    const { createPreflightState } = await import('../lib/preflightPlan.js');
+    getTaskById.mockResolvedValue(cardFor(createPreflightState({ requestId: 'demand-1', taskType: 'pr-reviewer' })));
+    await finishPreflightDispatch(preflightCardId('demand-1'), null);
+    const [, closed] = updateTask.mock.calls.at(-1);
+    expect(closed.metadata.preflight.outcome).toBe('nothing-to-do');
+    expect(closed.metadata.preflightResultTaskId).toBeUndefined();
+    expect(closed.metadata.preflight.steps.find(step => step.key === 'dispatch').status).toBe('skipped');
+  });
+
+  it('reads nothing for an uncarded run, so an automated origin pays no task lookup', async () => {
+    await finishPreflightDispatch(null, 'app-improve-1');
+    expect(getTaskById).not.toHaveBeenCalled();
+    expect(updateTask).not.toHaveBeenCalled();
   });
 
   it('treats a card as stale only once nothing could still be running it', async () => {
