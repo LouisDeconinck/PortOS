@@ -320,6 +320,11 @@ export default function Loras() {
         // inline family picker rather than toast a dead-end or force LTX.
         // (Skip when we already tried with an explicit override.)
         if (err?.code === 'HF_UNKNOWN_FAMILY' && !family) {
+          // The picker is the ENTIRE feedback for this branch — it deliberately
+          // raises no toast. It renders inside the Discover panel, and the
+          // install keeps running after the user leaves that tab, so surface
+          // the tab too or the failure is completely silent.
+          setView(VIEW_DISCOVER);
           setHfFamilyPrompt(url);
         } else {
           toast.error(err?.message || 'HuggingFace install failed');
