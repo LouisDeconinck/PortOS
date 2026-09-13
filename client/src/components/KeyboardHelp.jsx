@@ -40,6 +40,14 @@ const SHORTCUT_SECTIONS = [
       { keys: ['E'], description: 'Interact with building' },
     ],
   },
+  {
+    // The terminal keeps Tab for shell completion, so the way back out is a
+    // backtab — see useShellSession's attachCustomKeyEventHandler.
+    title: 'Shell',
+    shortcuts: [
+      { keys: ['Shift+Tab'], description: 'Move focus out of the terminal' },
+    ],
+  },
 ];
 
 
