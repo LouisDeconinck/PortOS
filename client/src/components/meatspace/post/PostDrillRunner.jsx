@@ -286,8 +286,8 @@ export default function PostDrillRunner({ session }) {
             inputMode={isTextDrill ? 'text' : isAppliedNumeracy ? 'decimal' : 'numeric'}
             value={inputValue}
             onChange={e => setInputValue(e.target.value)}
-            placeholder={isAppliedNumeracy ? 'Number and unit when requested' : 'Answer'}
-            aria-label={isAppliedNumeracy ? 'Your numeric answer and unit when requested' : 'Your answer'}
+            placeholder={isAppliedNumeracy ? 'Number (unit optional)' : 'Answer'}
+            aria-label={isAppliedNumeracy ? 'Your numeric answer' : 'Your answer'}
             autoFocus
             className="w-full bg-port-bg border border-port-border rounded-lg px-4 py-3 text-xl font-mono text-white text-center placeholder-gray-600 focus:border-port-accent focus:outline-none"
           />

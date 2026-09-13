@@ -59,7 +59,7 @@ describe('PostDrillRunner Applied Numeracy', () => {
       timeExpired: vi.fn(),
     }} />);
 
-    const input = screen.getByLabelText('Your numeric answer and unit when requested');
+    const input = screen.getByLabelText('Your numeric answer');
     expect(input).toHaveAttribute('type', 'text');
     expect(input).toHaveAttribute('inputmode', 'decimal');
   });
