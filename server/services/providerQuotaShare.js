@@ -19,7 +19,7 @@ import { atomicWrite, readJSONFile, PATHS } from '../lib/fileUtils.js';
 import { isPlainObject } from '../lib/objects.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { sanitizeQuotaCards, latestFetchedAt } from '../lib/fleetQuotas.js';
-import { parseTsMs } from '../lib/lwwTimestamp.js';
+import { compareNewerWins } from '../lib/lwwTimestamp.js';
 
 export const PROVIDER_QUOTAS_FILE = join(PATHS.data, 'provider-quotas.json');
 
@@ -45,16 +45,15 @@ export async function readLocalQuotaCards() {
 const claimOf = ({ fetchedAt, ...rest }) => JSON.stringify(rest);
 
 /**
- * Is `card` a reading taken BEFORE `incumbent`?
+ * Is `card` a reading taken STRICTLY BEFORE `incumbent`? The shared LWW
+ * predicate, asked the other way round — so this guard and the federated merge
+ * that consumes the result (`lib/fleetQuotas.js`) rank by one rule.
  *
- * Unparseable on either side is "can't tell", which answers false — the caller
- * then falls through to its normal last-write-wins, exactly as before.
+ * Only "strictly older" is rejected, not "not newer": two readings stamped the
+ * same instant with different claims are a correction, and the later write
+ * should still apply.
  */
-function isOlderReading(card, incumbent) {
-  const cardMs = parseTsMs(card?.fetchedAt);
-  const incumbentMs = parseTsMs(incumbent?.fetchedAt);
-  return cardMs !== null && incumbentMs !== null && cardMs < incumbentMs;
-}
+const isOlderReading = (card, incumbent) => compareNewerWins(incumbent?.fetchedAt, card?.fetchedAt);
 
 /**
  * Merge a batch of freshly-read cards into the store, keyed by family.
@@ -78,13 +77,12 @@ export async function recordLocalQuotaCards(cards) {
     for (const card of incoming) {
       const incumbent = byFamily.get(card.family);
       if (incumbent && claimOf(incumbent) === claimOf(card)) continue;
-      // A reading taken EARLIER than the one on file is not an update. Adapters
-      // differ in how stale their source can be — a Codex card derived from
-      // rollout-log telemetry is stamped with the turn that produced it and can
-      // be days old, while the same install's live account reading is minutes
-      // old — so an older card arriving second must not retire a newer one.
-      // Federation merges these by `fetchedAt`, so letting it through would
-      // hand every peer a reading this machine already knows is superseded.
+      // A reading taken EARLIER than the one on file is not an update: a card
+      // stamps when its READING was taken, so a source that lags (Codex rollout
+      // telemetry, stamped with the turn that produced it) can arrive after a
+      // current one while describing an older moment. Federation ranks these by
+      // `fetchedAt`, so letting it through would hand every peer a reading this
+      // machine already knows is superseded.
       if (incumbent && isOlderReading(card, incumbent)) continue;
       byFamily.set(card.family, card);
       changed = true;

@@ -465,7 +465,14 @@ describe('deferred imports stay deferred (#6156)', () => {
 // origin is carded" policy — is free: onDemandDrain.js already reached that
 // leaf directly, and gave up its own edge to the same shared helper. Nothing to
 // narrow — a deferred import IS the narrow form.
-const MAX_STATIC_INSTANTIATIONS = 103521;
+// The Codex quota-freshness fix measures +4: providerUsage.js and
+// providerQuotaShare.js stop hand-rolling "which reading is newer" and reach for
+// lwwTimestamp.js (the canonical LWW polarity) plus singleFlight.js. Both are
+// dependency-free leaves, so the delta is the two modules themselves across the
+// handful of closures that reach these services — there is no subtree behind
+// them to narrow, and deferring a compare used on every passive quota read
+// would trade the whole point of the shared rule for four instantiations.
+const MAX_STATIC_INSTANTIATIONS = 103525;
 
 
 const SKIP_DIRS = new Set(['node_modules', 'coverage', 'dist', 'data']);

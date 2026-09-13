@@ -125,26 +125,11 @@ export function createStaleWhileRevalidate({
     return settled.value;
   }
 
-  /**
-   * The last successful reading for `key`, or `undefined` — without producing
-   * one, and WITHOUT applying the TTL.
-   *
-   * For a caller that has a cheaper second source and wants to pick between
-   * them by the readings' own `fetchedAt` rather than by this cache's clock: an
-   * expensive reading taken an hour ago can still be the more current of the
-   * two, and `read` would either hide it (TTL lapsed → produce) or pay for a
-   * spawn to re-confirm it. Since values carry their own age, the caller can
-   * judge staleness itself; what it cannot do is afford the production.
-   */
-  function peek(key) {
-    return entries.get(key)?.value;
-  }
-
   /** Test seam / explicit invalidation. Omit `key` to clear everything. */
   function clear(key) {
     if (key === undefined) entries.clear();
     else entries.delete(key);
   }
 
-  return { read, peek, clear };
+  return { read, clear };
 }
