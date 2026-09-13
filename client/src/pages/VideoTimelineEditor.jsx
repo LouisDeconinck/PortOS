@@ -28,6 +28,7 @@ import {
 } from '../components/media/VideoTimelineLanes';
 import { NumberField, FadeFields, RemoveButton } from '../components/media/VideoTimelineInspector';
 import PageSkeleton from '../components/ui/PageSkeleton';
+import TabPills from '../components/ui/TabPills';
 import {
   assetUrl,
   segmentDuration,
@@ -78,9 +79,9 @@ const LANE_CAPS = {
 };
 
 const LIBRARY_TABS = [
-  { id: 'clips', label: 'Clips', Icon: Film },
-  { id: 'stills', label: 'Stills', Icon: ImageIcon },
-  { id: 'audio', label: 'Audio', Icon: Music },
+  { id: 'clips', label: 'Clips', icon: Film },
+  { id: 'stills', label: 'Stills', icon: ImageIcon },
+  { id: 'audio', label: 'Audio', icon: Music },
 ];
 
 const desktopTimelineLayout = () => (
@@ -759,24 +760,17 @@ export default function VideoTimelineEditor() {
       id="timeline-library"
       className="order-2 lg:order-1 bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto"
     >
-      <div className="flex gap-1 mb-2" role="tablist" aria-label="Clip library">
-        {LIBRARY_TABS.map(({ id, label, Icon }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={libraryTab === id}
-            onClick={() => setLibraryTab(id)}
-            className={`flex-1 flex items-center justify-center gap-1 px-1.5 py-1 text-[10px] rounded ${
-              libraryTab === id
-                ? 'bg-port-accent/20 text-port-accent'
-                : 'text-gray-400 hover:text-white border border-port-border'
-            }`}
-          >
-            <Icon className="w-3 h-3" aria-hidden="true" /> {label}
-          </button>
-        ))}
-      </div>
+      {/* The shared TabPills owns the roving tabindex + arrow-key contract —
+          never roll a tab bar (client/src/AGENTS.md). */}
+      <TabPills
+        variant="pills"
+        size="xs"
+        tabs={LIBRARY_TABS}
+        activeTab={libraryTab}
+        onChange={setLibraryTab}
+        ariaLabel="Clip library"
+        className="mb-2"
+      />
 
       {libraryTab === 'clips' && (libraryClips.length === 0 ? (
         <div className="text-xs text-gray-500 px-1 py-4">No clips. Generate some on the Video page.</div>

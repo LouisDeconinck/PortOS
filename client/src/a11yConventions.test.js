@@ -3733,4 +3733,70 @@ function B() { const sensors = useSensors(useSensor(PointerSensor)); return <Dnd
       });
     expect(stale, `routed-heading exemption entries that no longer match a heading-less routed element — delete them:\n${stale.join('\n')}`).toEqual([]);
   });
+
+  // --- shared tab bar primitive (#7244) --------------------------------------
+  //
+  // `role="tablist"` promises the WAI-ARIA tabs contract — one tab stop per
+  // bar, Arrow/Home/End moving between tabs — and only
+  // `components/ui/TabPills.jsx` implements it (roving tabindex
+  // `tabIndex={active ? 0 : -1}` plus `handleTabKeyDown`, which also skips
+  // `disabled` tabs). A hand-rolled bar puts every tab in the tab order and
+  // answers the promised keys with nothing (WCAG 4.1.2); the four audited
+  // surfaces in #7244 are exactly the drift #6910's primitive never reached.
+  // client/src/AGENTS.md already says "reuse it, never roll a new tab bar" —
+  // this scan is the backstop that keeps the next hand-rolled tab bar from
+  // shipping the same gap again.
+
+  // Every element whose `role` attribute literally reads "tablist", wherever
+  // one is written. Reading the answer off the parsed tag covers
+  // `role="tablist"`, `role='tablist'` and `role={'tablist'}` as one question;
+  // a commented-out example is masked before the walk, a `title` attribute's
+  // text is never a tag's `role`, and a dynamic `role={expr}` resolves to no
+  // verdict — left to review rather than guessed at.
+  const handRolledTablists = function* (src) {
+    // 'tablist' absent → lexing the file cannot yield a tablist tag.
+    if (!src.includes('tablist')) return;
+    for (const node of forEachOpeningTag(src)) {
+      if (normalizedAttributeValue(attributeValue(node.tag, 'role')) === 'tablist') yield node;
+    }
+  };
+
+  it('routes every tablist through the shared <TabPills> primitive (#7244)', () => {
+    // Probe first — the tree is green by construction (the four audited sites
+    // moved onto TabPills in the same change), so nothing in it pins what the
+    // walk rejects, and a silent change of shape would turn the rule vacuous.
+    const probe = (src) => [...handRolledTablists(src)].map(({ index }) => lineOf(src, index));
+    expect(probe('<div role="tablist" aria-label="X"><button role="tab">A</button></div>')).toEqual([1]);
+    // …whichever way the literal is spelled, and wherever the tag starts.
+    expect(probe("<p>x</p>\n<div\n  role='tablist'\n/>")).toEqual([2]);
+    expect(probe('<div role={"tablist"} />')).toEqual([1]);
+    expect(probe('<div role="tablist" /><nav role="tablist" />')).toEqual([1, 1]);
+    // The shared primitive's call site carries no `role` — it is the answer,
+    // not the question.
+    expect(probe('<TabPills tabs={tabs} activeTab={a} onChange={c} />')).toEqual([]);
+    // A bare role="tab" outside a list is a different defect, and a dynamic
+    // role is unverifiable — both are out of this rule's remit.
+    expect(probe('<div role="tab" /><div role={roleFor(kind)} />')).toEqual([]);
+    // A JSX example written in a comment is masked before the walk, and a
+    // mention inside another attribute's quoted value is never read as a role.
+    expect(probe(maskComments('{/* <div role="tablist" /> */}'))).toEqual([]);
+    expect(probe('<div data-note="x" title="see tablist docs" />')).toEqual([]);
+
+    // Prove the walk sees the real spelling on the shared component itself —
+    // a matcher that silently missed it would pass the tree vacuously.
+    expect(
+      [...handRolledTablists(maskedSourceOf('src/components/ui/TabPills.jsx'))].length,
+      'components/ui/TabPills.jsx no longer writes role="tablist" — has the primitive changed shape?',
+    ).toBeGreaterThanOrEqual(1);
+
+    const offenders = [];
+    for (const file of trackedSourceFiles()) {
+      if (file === 'src/components/ui/TabPills.jsx') continue;
+      const src = maskedSourceOf(file);
+      for (const { index } of handRolledTablists(src)) {
+        offenders.push(`${file}:${lineOf(src, index)}`);
+      }
+    }
+    expect(offenders, `Hand-rolled role="tablist" — render the shared components/ui/TabPills.jsx instead; it owns the roving tabindex + Arrow/Home/End contract a hand-rolled bar cannot honor (WCAG 4.1.2):\n${offenders.join('\n')}`).toEqual([]);
+  });
 });
