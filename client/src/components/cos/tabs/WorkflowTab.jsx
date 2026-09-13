@@ -169,20 +169,24 @@ function TimelineRow({ node, occurrences, windows, timeline, hours, timezone, se
         <button type="button" onClick={() => onSelect(node.id)} className="relative block min-h-12 overflow-hidden text-left">
           <TrackGrid divisions={divisions} />
           <span className="absolute inset-y-0 left-0 z-10 border-l border-port-accent/70" />
-          {windows.map(window => {
+          {windows.map(bar => {
             // A live drain is filled; a future recurrence is a washed-out
             // outline, so "running now" stays distinguishable from "runs then".
-            const live = window.state === 'draining';
-            const label = `${live ? 'Draining since' : 'Drain starts'} ${formatPoint(window.startAt, hours, timezone)}`;
+            const live = bar.state === 'draining';
+            const label = `${live ? 'Draining since' : 'Drain starts'} ${formatPoint(bar.startAt, hours, timezone)}`;
             return (
+              // role="img" so `aria-label` is honored — ARIA prohibits naming a
+              // bare span (role generic), which would leave the bar nameless to
+              // screen readers while still satisfying a getByLabelText test.
               <span
-                key={window.id}
+                key={bar.id}
+                role="img"
                 aria-label={label}
                 className={`absolute inset-y-2 z-10 flex items-center gap-1 overflow-hidden rounded border px-1 ${live ? 'border-amber-400/50 bg-gradient-to-r from-amber-500/35 to-amber-500/10' : 'border-dashed border-amber-400/35 bg-amber-500/10'}`}
                 // `minWidth` over-constrains left/right so the box grows right
                 // from its start: an hour is ~4% of a 24h track and under 1% of
                 // a 7-day one, which would otherwise render as a hairline.
-                style={{ left: `${timelinePercent(window.startAt, timeline)}%`, right: `${100 - timelinePercent(window.endAt, timeline)}%`, minWidth: '1.25rem' }}
+                style={{ left: `${timelinePercent(bar.startAt, timeline)}%`, right: `${100 - timelinePercent(bar.endAt, timeline)}%`, minWidth: '1.25rem' }}
                 title={`${label} · perpetual: the bar shows a nominal hour, the drain continues while backlog remains`}
               >
                 <InfinityIcon className="h-3 w-3 shrink-0 text-amber-200" />
