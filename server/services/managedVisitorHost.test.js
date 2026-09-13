@@ -18,3 +18,30 @@ it('host response buffering is bounded and malformed/non-success replies do not 
   fetchImpl.mockResolvedValueOnce(new Response('not json')); expect(await host.capabilities()).toBe(null);
   fetchImpl.mockResolvedValueOnce(new Response('{}', { status: 401 })); await expect(host.admit({}, { deadlineMs: Date.now() + 1000 })).rejects.toThrow(/refused/);
 });
+it('an omitted token resolves live from settings (winning over the env var) or falls back to it, with no caching across calls', async () => {
+  const originalEnv = process.env.PORTOS_EIDOVERSE_VISITOR_TOKEN;
+  const envToken = 'e'.repeat(64), settingsToken = 'a'.repeat(64);
+  process.env.PORTOS_EIDOVERSE_VISITOR_TOKEN = envToken;
+  try {
+    vi.resetModules();
+    let stubbedSettings = { secrets: { eidoverse: { visitorToken: settingsToken } } };
+    vi.doMock('./settings.js', () => ({ getSettings: async () => stubbedSettings }));
+    const { createManagedVisitorHost: createHost } = await import('./managedVisitorHost.js');
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ capabilities: { managedVisitors: null } })));
+    const host = createHost({ fetchImpl }); // no explicit token: must resolve live
+    await host.capabilities();
+    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe(`Bearer ${settingsToken}`); // settings wins over env
+
+    stubbedSettings = { secrets: {} }; // settings cleared — must fall back to env, not a cached settings value
+    await host.capabilities();
+    expect(fetchImpl.mock.calls[1][1].headers.Authorization).toBe(`Bearer ${envToken}`);
+
+    stubbedSettings = {}; process.env.PORTOS_EIDOVERSE_VISITOR_TOKEN = '';
+    expect(await host.capabilities()).toBe(null); // neither source configured: disabled, no request made
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.doUnmock('./settings.js'); vi.resetModules();
+    if (originalEnv === undefined) delete process.env.PORTOS_EIDOVERSE_VISITOR_TOKEN;
+    else process.env.PORTOS_EIDOVERSE_VISITOR_TOKEN = originalEnv;
+  }
+});
