@@ -899,4 +899,74 @@ describe('Codex quota freshness across a passive re-read', () => {
       vi.useRealTimers();
     }
   });
+
+  // Reported by the agy reviewer: the picker ranked two whole cards by
+  // `fetchedAt`, but a card carrying no meters is the ABSENCE of a reading —
+  // and fetchCodexQuota stamps its own clock on the synthetic "no session logs"
+  // card, so it always looked newer.
+  it('keeps the live reading when the install has no rollout logs at all', async () => {
+    await rm(join(home, 'sessions'), { recursive: true, force: true });
+    getCodexAccountReadiness.mockResolvedValue({
+      checkedAt: Date.now() - 3600_000,
+      account: { planType: 'pro' },
+      rateLimits: {
+        primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: new Date(Date.now() + 3600000).toISOString() },
+        secondary: null,
+      },
+    });
+    await getProviderQuotas({ family: 'codex', wait: 'fresh' });
+
+    const [again] = await getProviderQuotas({ family: 'codex', wait: 'never' });
+    expect(again.limits[0].percentUsed).toBe(100);
+    expect(again.error).toBeUndefined();
+  });
+
+  // Same root cause from the other side: a turn that reported only a spent
+  // credit balance produces window-less telemetry with a NEWER timestamp.
+  it('keeps the live reading when newer telemetry carries no windows', async () => {
+    getCodexAccountReadiness.mockResolvedValue({
+      checkedAt: Date.now() - 3600_000,
+      account: { planType: 'pro' },
+      rateLimits: {
+        primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: new Date(Date.now() + 3600000).toISOString() },
+        secondary: null,
+      },
+    });
+    await getProviderQuotas({ family: 'codex', wait: 'fresh' });
+
+    await rm(join(home, 'sessions'), { recursive: true, force: true });
+    const ts = new Date(Date.now() - 60_000).toISOString();
+    await writeSession(home, {
+      day: dayOf(ts),
+      name: ts,
+      lines: [JSON.stringify({ timestamp: ts, payload: { rate_limits: { limit_id: 'premium', primary: null, secondary: null, credits: { unlimited: false, has_credits: false, balance: 0 } } } })],
+    });
+    const [again] = await getProviderQuotas({ family: 'codex', wait: 'never' });
+    expect(again.limits[0].percentUsed).toBe(100);
+  });
+
+  // A retained card ages meter-by-meter: one spent window can roll over while
+  // another is still live, and serving the card whole shows a 100% meter whose
+  // reset time has already passed.
+  it('prunes only the retained meters that have since reset', async () => {
+    getCodexAccountReadiness.mockResolvedValue({
+      checkedAt: Date.now(),
+      account: { planType: 'pro' },
+      rateLimits: {
+        primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: new Date(Date.now() + 1000).toISOString() },
+        secondary: { usedPercent: 40, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86400000).toISOString() },
+      },
+    });
+    const [fresh] = await getProviderQuotas({ family: 'codex', wait: 'fresh' });
+    expect(fresh.limits.map((l) => l.key)).toEqual(['session', 'week']);
+
+    vi.setSystemTime(new Date(Date.now() + 60_000));
+    try {
+      const [again] = await getProviderQuotas({ family: 'codex', wait: 'never' });
+      expect(again.limits.map((l) => l.key)).toEqual(['week']); // the 5h window rolled over
+      expect(again.limits[0].percentUsed).toBe(40);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

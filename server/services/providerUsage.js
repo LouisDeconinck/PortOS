@@ -328,16 +328,17 @@ async function readLiveCodexQuota() {
 }
 
 /**
- * Pure: does this card still describe the CURRENT allowance?
+ * Pure: the meters in a card that have NOT rolled over as of `now`.
  *
- * A retained reading whose every metered window has since reset is describing a
- * spent allowance, the same way `codexWindowExpired` rules out a rolled-over
- * log entry. A window whose reset time can't be resolved hasn't been shown to
- * have passed, so it counts as live; a card with no meters at all has nothing
- * to have expired, and so never outranks a reading that does.
+ * A retained reading ages meter-by-meter, not all at once — a card holding a
+ * spent 5h window beside a live weekly one is half stale, and serving it whole
+ * shows an exhausted meter whose reset time has already passed. Same rule
+ * `codexWindowExpired` applies to a rolled-over log entry, applied at serve
+ * time because the card outlives the read that produced it. A window whose
+ * reset can't be resolved hasn't been shown to have passed, so it counts live.
  */
-const codexCardUnexpired = (card, now) =>
-  (card?.limits || []).some((limit) => {
+const unexpiredLimits = (card, now) =>
+  (card?.limits || []).filter((limit) => {
     const { epochMs } = normalizeResetAt(limit, { now });
     return epochMs === null || epochMs > now;
   });
@@ -350,8 +351,15 @@ const codexCardUnexpired = (card, now) =>
  * current state, while the rollout logs only know what the last Codex TURN was
  * told — which may be days stale. Serving the log tail unconditionally on
  * passive reads is what made the card snap back to an old percentage as soon as
- * the user navigated away from an explicit Refresh, so the retained live
- * reading holds unless the log is genuinely fresher.
+ * the user navigated away from an explicit Refresh.
+ *
+ * METERS decide, not clocks. A card carrying no meters is the absence of a
+ * reading, not a newer one: `fetchCodexQuota` stamps its own clock on a
+ * synthetic "no session logs" card and on window-less telemetry, so ranking the
+ * two cards by `fetchedAt` alone let an empty card retire a live account
+ * reading — an install that runs Codex only through PortOS (no rollout logs at
+ * all) lost its quota meters on the very next poll. Only when both sides
+ * actually have meters is the timestamp the question.
  */
 async function fetchCurrentCodexQuota({ wait = WAIT.CACHED } = {}) {
   if (wait === WAIT.FRESH) {
@@ -361,9 +369,13 @@ async function fetchCurrentCodexQuota({ wait = WAIT.CACHED } = {}) {
     return { ...quota, note: `Live Codex quota refresh unavailable; showing local telemetry. ${quota.note || ''}`.trim() };
   }
   const now = Date.now();
-  const live = retainedLiveCodexCard;
   const quota = await fetchCodexQuota({ now });
-  if (!live || !codexCardUnexpired(live, now)) return quota;
+  // Pruned at serve time and never written back: the retained card stays the
+  // canonical reading, so a later read prunes further rather than compounding.
+  const liveLimits = unexpiredLimits(retainedLiveCodexCard, now);
+  if (!liveLimits.length) return quota;
+  const live = { ...retainedLiveCodexCard, limits: liveLimits };
+  if (!quota.limits.length) return live;
   return compareNewerWins(quota.fetchedAt, live.fetchedAt) ? quota : live;
 }
 
