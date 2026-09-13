@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Mail, Search, RefreshCw, ChevronRight, Sparkles, Archive, Trash2, Reply, Eye, Flag, Pin, Loader2, Settings, FilterX, AlertTriangle } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router';
 import toast from '../ui/Toast';
+import TabPills from '../ui/TabPills';
 import * as api from '../../services/api';
 import socket from '../../services/socket';
 import { timeAgo, formatDateNumeric } from '../../utils/formatters';
@@ -414,6 +415,18 @@ export default function InboxTab({ accounts }) {
     [messages, currentTab]
   );
 
+  // TabPills descriptors carry the per-filter count badge; the filter
+  // predicates themselves stay on TRIAGE_TABS for the list derivation above.
+  const triagePills = useMemo(
+    () => TRIAGE_TABS.map((tab) => ({
+      id: tab.key,
+      label: tab.label,
+      icon: tab.icon,
+      count: messages.filter(tab.filter).length,
+    })),
+    [messages]
+  );
+
   // Scope the "have we ever synced?" answer to the accounts the current view can
   // show — with an account filter on, another account's sync says nothing about
   // this one. A sync that landed in this session wins over the (not-yet-refetched)
@@ -545,35 +558,17 @@ export default function InboxTab({ accounts }) {
         </div>
       </div>
 
-      {/* Triage filter tabs — scroll on a phone rather than clipping "All" / "Untriaged". */}
-      <div
-        className="-mx-1 px-1 flex items-center gap-1 border-b border-port-border pb-1 overflow-x-auto scrollbar-hide touch-pan-x"
-        role="tablist"
-        aria-label="Triage filters"
-      >
-        {TRIAGE_TABS.map(tab => {
-          const count = messages.filter(tab.filter).length;
-          const TabIcon = tab.icon;
-          const isActive = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-t text-xs whitespace-nowrap shrink-0 transition-colors ${
-                isActive
-                  ? 'bg-port-card text-white border border-port-border border-b-transparent -mb-[1px]'
-                  : 'text-gray-500 hover:text-gray-300'
-              }`}
-            >
-              <TabIcon size={12} />
-              {tab.label}
-              {count > 0 && <span className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] ${isActive ? 'bg-port-accent/20 text-port-accent' : 'bg-port-border text-gray-400'}`}>{count}</span>}
-            </button>
-          );
-        })}
-      </div>
+      {/* Triage filter tabs — the shared TabPills owns the roving tabindex and
+          arrow-key contract; its strip keeps the phone horizontal scroll so
+          "All" / "Untriaged" never clip. */}
+      <TabPills
+        tabs={triagePills}
+        activeTab={activeTab}
+        onChange={setActiveTab}
+        size="sm"
+        ariaLabel="Triage filters"
+        className="-mx-1 px-1"
+      />
 
       {visibleMessages.length === 0 && !loading && (
         <InboxEmptyState
