@@ -400,7 +400,7 @@ export default function Review() {
               </div>
             )}
             {queueSourceErrors.length > 0 && (
-              <p className="text-xs text-gray-600">
+              <p role="status" className="text-xs text-gray-600">
                 Couldn&apos;t load: {queueSourceErrors.map(([, s]) => s.label).join(', ')}.
               </p>
             )}

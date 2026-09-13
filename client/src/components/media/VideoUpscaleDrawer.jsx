@@ -194,7 +194,7 @@ export default function VideoUpscaleDrawer({ item, onClose, onUpscaled }) {
               <span className="block text-sm text-white">LTX-2.5 generative (synthesizes detail)</span>
               <span className="block text-[11px] text-gray-500">2× via a GPU model — adds detail rather than resizing pixels.</span>
               {planLoading && <span className="block text-[11px] text-gray-500 mt-1">Checking readiness…</span>}
-              {planError && <span className="block text-[11px] text-port-error mt-1">{planError}</span>}
+              {planError && <span role="status" className="block text-[11px] text-port-error mt-1">{planError}</span>}
               {generativeDisabledReason && (
                 <span id="upscale-method-ltx-reason" className="block text-[11px] text-port-warning mt-1">
                   {generativeDisabledReason}

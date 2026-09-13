@@ -452,7 +452,7 @@ const BackupWidget = memo(function BackupWidget() {
 
       {/* Error message */}
       {status?.status === 'error' && status.error && (
-        <div className="mb-4 p-3 rounded-lg bg-port-error/10 border border-port-error/20 flex items-start gap-2">
+        <div role="status" className="mb-4 p-3 rounded-lg bg-port-error/10 border border-port-error/20 flex items-start gap-2">
           <XCircle size={14} className="text-port-error shrink-0 mt-0.5" />
           <p className="text-xs text-port-error">{status.error}</p>
         </div>

@@ -1198,7 +1198,7 @@ export default function AgentCard({ agent, onPause, onKill, onDelete, onResume, 
             </div>
           )}
           {promptError && (
-            <div className="text-port-error text-sm">{promptError}</div>
+            <div role="status" className="text-port-error text-sm">{promptError}</div>
           )}
           {!loadingPrompt && !promptError && promptContent != null && (
             <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words">{promptContent}</pre>
