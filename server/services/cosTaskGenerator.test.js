@@ -1742,7 +1742,7 @@ describe('pr-reviewer security preflight wiring', () => {
   it('runs the direct preflight before stage gates and resolves the next-stage prompt', () => {
     const start = GEN_SRC.indexOf('export async function prepareManagedAppImprovementTask');
     const body = GEN_SRC.slice(start, GEN_SRC.indexOf('return { task, pendingPerpetualDispatch };', start));
-    const preflightAt = body.indexOf('runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest, taskSchedule)');
+    const preflightAt = body.indexOf('runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest, taskSchedule, {');
     const preconditionAt = body.indexOf('shouldSkipForPrecondition(metadata, app, taskType)');
     const promptAt = body.indexOf('getStagePrompt(taskType, currentStageIndex)');
 

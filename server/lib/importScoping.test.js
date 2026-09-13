@@ -451,7 +451,14 @@ describe('deferred imports stay deferred (#6156)', () => {
 // the new modules themselves rather than a new heavy subtree. There is nothing
 // to narrow — bufferedSpawn IS how this tree captures a subprocess's output —
 // so raise by exactly that delta and keep the existing headroom.
-const MAX_STATIC_INSTANTIATIONS = 103384;
+// The preflight task card (#7258) adds lib/preflightPlan.js — a zero-import
+// leaf — and services/preflightTaskCard.js, which reaches only cosTaskStore.js
+// (already in every closure that drains on-demand requests). Nearly all of the
+// measured +136 is the barrel: registering the leaf in lib/index.js, which the
+// module-organization rule requires, instantiates one more module in every
+// closure that reaches the barrel. There is nothing to narrow — the leaf pulls
+// nothing — so raise by exactly that delta and keep the existing headroom.
+const MAX_STATIC_INSTANTIATIONS = 103520;
 
 
 const SKIP_DIRS = new Set(['node_modules', 'coverage', 'dist', 'data']);

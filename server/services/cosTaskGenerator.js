@@ -2160,7 +2160,7 @@ export async function drainProgrammaticOnDemandRequests({ taskScheduleMod, reque
  * user-initiated on-demand path, so the client can toast it without
  * background-park noise.
  */
-export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, taskConfig }) {
+export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, taskConfig, preflightCardId = null }) {
   const appId = targetApp?.id || null;
   const parkInfo = await taskScheduleMod.getPerpetualParkInfo(request.taskType, appId).catch(() => null);
   const isDetectorDriven = taskConfig?.perpetual === true;
@@ -2207,28 +2207,39 @@ export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, t
     if (health && !health.ok && health.remedy) forge = { cli: 'gh', remedy: health.remedy };
   }
 
-  // A preflight has no agent lifecycle, but an explicit failed run still needs
-  // a durable record. Terminal status prevents either spawn engine from running
-  // this diagnostic as a task; retry must enter through the security scan again.
-  if (request.taskType === 'pr-reviewer' && appId && reason?.startsWith('security-') && reason !== 'security-scan-report-pending') {
-    const note = `PR review stopped before an agent started (${reason}). No PR actions were taken. `
-      + (reason.startsWith('security-guard-')
-        ? 'Open Models → LLMs → Abuse Guard, check its setup and repair it if needed, then retry PR review. The classifier did not return a usable safety verdict; this is not a finding against the PR.'
-        : 'Check the repository connection and security scan configuration, then retry PR review.');
-    await addTask({
-      id: `pr-review-preflight-${request.id}`,
-      status: 'completed',
-      priority: 'MEDIUM',
-      priorityValue: 2,
-      taskType: 'internal',
-      description: `PR review preflight failed for ${targetApp.name}${request.targetPullRequest ? ` #${request.targetPullRequest}` : ''}`,
-      metadata: {
-        app: appId, analysisType: 'pr-reviewer',
-        targetPullRequest: request.targetPullRequest ?? null,
-        preflightFailure: reason, note,
-        completedAt: new Date().toISOString(),
-      },
-    }, 'internal', { raw: true, suppressDequeue: true });
+  // Close the run's card — or, for an automated run that never opened one, mint
+  // it in its terminal state. A preflight has no agent lifecycle, but an
+  // explicit failure still needs a durable record: terminal status prevents
+  // either spawn engine from running this diagnostic as a task, and a retry has
+  // to enter through the security scan again. The PR row paints from the
+  // `preflightFailure` + `note` this stamps.
+  const securityFailure = request.taskType === 'pr-reviewer' && appId
+    && reason?.startsWith('security-') && reason !== 'security-scan-report-pending';
+  const { finishPreflightCard, recordPreflightOutcome } = await import('./preflightTaskCard.js');
+  if (securityFailure) {
+    // Minted when absent: an automated cadence run reaches the same failure with
+    // no card to close, and it needs the record just as much.
+    await recordPreflightOutcome({
+      requestId: request.id,
+      taskType: request.taskType,
+      appId,
+      appName: targetApp?.name || null,
+      targetPullRequest: request.targetPullRequest ?? null,
+      outcome: 'failed',
+      reason,
+      note: `PR review stopped before an agent started (${reason}). No PR actions were taken. `
+        + (reason.startsWith('security-guard-')
+          ? 'Open Models → LLMs → Abuse Guard, check its setup and repair it if needed, then retry PR review. The classifier did not return a usable safety verdict; this is not a finding against the PR.'
+          : 'Check the repository connection and security scan configuration, then retry PR review.'),
+    });
+  } else {
+    // An ordinary empty outcome — parked, transient, plain nothing to do. Only
+    // ever closes a card that already exists: minting one for an automated run
+    // nobody is watching would fill the Tasks page with cadence noise.
+    await finishPreflightCard(preflightCardId, {
+      outcome: 'nothing-to-do',
+      reason: reason || parkInfo?.parkReason || outcome,
+    });
   }
 
   cosEvents.emit('schedule:on-demand-empty', {
@@ -2586,7 +2597,10 @@ export async function prepareManagedAppImprovementTask(taskType, app, state, {
   targetPullRequest = null,
   // Per-request provider/model/effort pin — see applyProviderModelPins.
   providerOverride = null,
-  runOverrides = null
+  runOverrides = null,
+  // The user's programmatic-phase card, when a human triggered this run. The
+  // deterministic pre-agent work reports its progress into it.
+  preflightCardId = null
 } = {}) {
   const { updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
@@ -2640,7 +2654,10 @@ export async function prepareManagedAppImprovementTask(taskType, app, state, {
 
   if (taskType === 'pr-reviewer') ensurePrReviewerPipeline(metadata);
   initializePipelineMetadata(metadata);
-  const securityPreflight = await runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest, taskSchedule);
+  const { preflightReporter } = await import('./preflightTaskCard.js');
+  const securityPreflight = await runPrReviewerSecurityPreflight(taskType, app, metadata, targetPullRequest, taskSchedule, {
+    progress: preflightReporter(preflightCardId),
+  });
   // Record (or clear a stale) skip reason in the SAME call: clearing on a passed
   // gate matters too, or an unrelated later idle outcome for this app (e.g. a
   // downstream precondition skip below) could read back a reason that no longer

@@ -795,8 +795,25 @@ async function resetOrphanedTasks({ bootRecovery = false } = {}) {
   // cooldown enforcement, and max-spawn limits (prevents runaway respawning)
   const { handleOrphanedTask } = await import('./agentManagement.js');
 
+  // A programmatic-phase card (services/preflightTaskCard.js) is `in_progress`
+  // with no agent BY DESIGN — it describes deterministic pre-agent work, has no
+  // prompt, and must never be handed to `handleOrphanedTask`, which would flip
+  // it to `pending` and spawn an agent on a task that is only a progress
+  // display. A card stranded by a restart is closed as interrupted instead, and
+  // one still inside its grace window is left alone: a pr-reviewer security
+  // scan is minutes of real work, and reaping a live preflight would make the
+  // card lie in the one direction that matters.
+  const { finishPreflightCard, isPreflightCard, isStalePreflightCard } = await import('./preflightTaskCard.js');
+
   const processOrphanedTasks = async (tasks) => {
     for (const task of tasks) {
+      if (isPreflightCard(task)) {
+        if (isStalePreflightCard(task)) {
+          emitLog('info', `Closing preflight card ${task.id} — no process is still running its checks`, { taskId: task.id });
+          await finishPreflightCard(task.id, { outcome: 'interrupted' });
+        }
+        continue;
+      }
       if (runningAgentTaskIds.includes(task.id)) {
         // A local agent is actively working this task — renew its federation
         // lease (the heartbeat, issue #1563) so a peer sharing this task list
