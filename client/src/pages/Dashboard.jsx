@@ -538,9 +538,10 @@ export default function Dashboard() {
               ) : (
                 <>
                   Drag the <Move size={12} className="inline mx-0.5" /> handle to move widgets, or
-                  the <span className="inline-block px-1">↘</span> handle to resize. Widgets size
-                  themselves to their content and float up into the space above — dragging a
-                  widget&apos;s height pins it, and the{' '}
+                  the <span className="inline-block px-1">↘</span> handle to resize — or focus
+                  either one and press space, then the arrow keys, then enter (escape cancels).
+                  Widgets size themselves to their content and float up into the space above —
+                  setting a widget&apos;s height pins it, and the{' '}
                   <ChevronsDownUp size={12} className="inline mx-0.5" /> handle hands it back.
                 </>
               )}

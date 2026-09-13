@@ -24,6 +24,15 @@ const SHORTCUT_SECTIONS = [
     ],
   },
   {
+    title: 'Dashboard Arrange (when a move or resize handle is focused)',
+    shortcuts: [
+      { keys: ['Enter', 'Space'], description: 'Grab the widget — press again to place it' },
+      { keys: ['←', '→'], description: 'Move a column, or resize by a column' },
+      { keys: ['↑', '↓'], description: 'Move up or down the order, or resize by a row' },
+      { keys: ['Esc'], description: 'Put the widget back where it was' },
+    ],
+  },
+  {
     title: 'OpenWorld',
     shortcuts: [
       { keys: ['W', 'A', 'S', 'D'], description: 'Move around' },
