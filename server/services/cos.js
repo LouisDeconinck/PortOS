@@ -159,7 +159,7 @@ import {
 // predicate are shared with the scheduler unit tests so they exercise the real
 // guards instead of a local replica. The async tiers stay here as
 // `spawnDequeuePriorityN(ctx)` helpers.
-import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isIdleTierEligible } from './cosDequeue.js';
+import { closeStolenIdleReviewCard, createDequeueCapacity, countRunningAgentsByLocalEndpoint, isIdleTierEligible } from './cosDequeue.js';
 import { buildLocalEndpointSlotContext, localEndpointCapacityError } from './cosLocalEndpointSlots.js';
 import {
   initializePersistentMindSupervisor,
@@ -1125,14 +1125,9 @@ async function spawnDequeuePriority3IdleReview(ctx) {
       cosEvents.emit('task:ready', idleTask);
       capacity.trackSpawn(idleTask);
     }
-    // This tier may have STOLEN a human's on-demand request (see
-    // generateManagedAppImprovementTask). Closing its card is this tier's job
-    // because only here is the spawn decision final. Guarded so an ordinary
-    // idle tick — which has no card — pays neither the import nor a task read.
-    if (preflightCardId) {
-      const { finishPreflightDispatch } = await import('./preflightTaskCard.js');
-      await finishPreflightDispatch(preflightCardId, admitted ? idleTask.id : null);
-    }
+    // This tier may have STOLEN a human's on-demand request. Closing its card is
+    // the tier's job because only here is the admission decision final.
+    await closeStolenIdleReviewCard(preflightCardId, admitted ? idleTask : null);
   }
 }
 

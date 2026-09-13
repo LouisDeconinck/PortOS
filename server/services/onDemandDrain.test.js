@@ -69,14 +69,21 @@ vi.mock('./taskSchedule.js', () => ({
   applyOnDemandRunResets: (...a) => mocks.applyOnDemandRunResets(...a),
   recordExecution: (...a) => mocks.recordExecution(...a),
 }));
-vi.mock('./preflightTaskCard.js', () => ({
-  preflightCardId: (requestId) => `preflight-${requestId}`,
-  startPreflightCard: (...a) => mocks.startPreflightCard(...a),
-  recordPreflightOutcome: (...a) => mocks.recordPreflightOutcome(...a),
-  reportPreflightStep: (...a) => mocks.reportPreflightStep(...a),
-  finishPreflightCard: (...a) => mocks.finishPreflightCard(...a),
-  finishPreflightDispatch: (...a) => mocks.finishPreflightDispatch(...a),
-}));
+// Only the card's I/O is doubled. `cardIdForRequest` keeps the REAL origin
+// policy (`isUserOriginRequest` is a pure leaf), so the 'opens no card for an
+// automated origin' tests below still exercise the decision, not a stub of it.
+vi.mock('./preflightTaskCard.js', async () => {
+  const { isUserOriginRequest } = await vi.importActual('./taskScheduleConstants.js');
+  return {
+    preflightCardId: (requestId) => `preflight-${requestId}`,
+    cardIdForRequest: (request) => (isUserOriginRequest(request) ? `preflight-${request.id}` : null),
+    startPreflightCard: (...a) => mocks.startPreflightCard(...a),
+    recordPreflightOutcome: (...a) => mocks.recordPreflightOutcome(...a),
+    reportPreflightStep: (...a) => mocks.reportPreflightStep(...a),
+    finishPreflightCard: (...a) => mocks.finishPreflightCard(...a),
+    finishPreflightDispatch: (...a) => mocks.finishPreflightDispatch(...a),
+  };
+});
 vi.mock('./cosTaskGenerator.js', () => ({
   prepareManagedAppImprovementTask: (...a) => mocks.prepareManagedAppImprovementTask(...a),
   generateSelfImprovementTaskForType: (...a) => mocks.generateSelfImprovementTaskForType(...a),
@@ -558,6 +565,6 @@ describe('preflight task card', () => {
     await drainOnDemandRequests({ state: STATE }, adapter);
     // emitOnDemandEmpty owns the specific reason; this is the backstop close.
     expect(mocks.emitOnDemandEmpty).toHaveBeenCalledWith(expect.objectContaining({ preflightCardId: 'preflight-req-1' }));
-    expect(mocks.finishPreflightCard).toHaveBeenCalledWith('preflight-req-1', { outcome: 'nothing-to-do' });
+    expect(mocks.finishPreflightDispatch).toHaveBeenCalledWith('preflight-req-1');
   });
 });

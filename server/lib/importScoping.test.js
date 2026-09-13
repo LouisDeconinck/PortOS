@@ -458,10 +458,13 @@ describe('deferred imports stay deferred (#6156)', () => {
 // module-organization rule requires, instantiates one more module in every
 // closure that reaches the barrel. There is nothing to narrow — the leaf pulls
 // nothing — so raise by exactly that delta and keep the existing headroom.
-// The idle-review steal's card hand-off adds one test file and no module: it
+// The idle-review steal's card hand-off measures +1: one new test file, which
 // reaches cosTaskGenerator.js through `await import()` (after its vi.mocks, as
-// that suite must), so its static closure is itself alone and the measured
-// delta is +1. Nothing to narrow — a deferred import IS the narrow form.
+// that suite must), so its static closure is itself alone. Its one new module
+// edge — preflightTaskCard.js → taskScheduleConstants.js, for the "only a USER
+// origin is carded" policy — is free: onDemandDrain.js already reached that
+// leaf directly, and gave up its own edge to the same shared helper. Nothing to
+// narrow — a deferred import IS the narrow form.
 const MAX_STATIC_INSTANTIATIONS = 103521;
 
 

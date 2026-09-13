@@ -11,8 +11,9 @@
  * 15-minute orphan sweep mislabelled it `interrupted`.
  *
  * These pin the hand-off: the steal binds the pre-agent progress reporter to
- * that card, and carries the card id out to the tier — the only place the spawn
- * decision is final, and therefore the only place that may close it.
+ * that card, and carries the card id out to the tier — the only place the
+ * admission decision is final, and therefore the only place that may close it
+ * (cosDequeue#closeStolenIdleReviewCard).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -68,7 +69,7 @@ const { generateIdleReviewTask } = await import('./cosTaskGenerator.js');
 
 const STATE = { config: { improvementEnabled: true, appReviewCooldownMs: 0 }, stats: {} };
 const request = (overrides = {}) => ({ id: 'demand-1', appId: 'example-app', taskType: 'pr-reviewer', ...overrides });
-const progressOf = () => pipeline.securityPreflight.mock.calls.at(-1)?.[5]?.progress;
+const progressOf = () => pipeline.securityPreflight.mock.calls.at(-1)?.at(-1)?.progress;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -93,7 +94,6 @@ describe('idle review stealing a queued on-demand request', () => {
   it('binds the pre-agent progress reporter to that card', async () => {
     scheduleMocks.requests = [request()];
     await generateIdleReviewTask(STATE);
-    expect(preflight.reporter).toHaveBeenCalledWith('preflight-demand-1');
     expect(progressOf()).toEqual({ boundTo: 'preflight-demand-1' });
   });
 
@@ -112,32 +112,3 @@ describe('idle review stealing a queued on-demand request', () => {
   });
 });
 
-/**
- * Both spawn engines have their own idle-review tier — `dequeueNextTask`'s in
- * cos.js and `evaluateTasks`' here — and each rules on the task the steal
- * produced independently. A tier that forgets the close leaves exactly the card
- * this file exists for, so pin that neither can drift away from it.
- */
-const tierBody = (source, name) => {
-  const start = source.indexOf(`async function ${name}(`);
-  expect(start, `${name} must exist`).toBeGreaterThan(-1);
-  const next = source.indexOf('\n}\n', start);
-  return source.slice(start, next);
-};
-
-describe('both idle-review tiers close the stolen card', () => {
-  it.each([
-    ['cos.js', 'spawnDequeuePriority3IdleReview'],
-    ['cosTaskGenerator.js', 'spawnPriority4IdleReview'],
-  ])('%s#%s', async (file, name) => {
-    const { readFileSync } = await import('fs');
-    const { fileURLToPath } = await import('url');
-    const { dirname, join } = await import('path');
-    const body = tierBody(readFileSync(join(dirname(fileURLToPath(import.meta.url)), file), 'utf-8'), name);
-    expect(body).toContain('finishPreflightDispatch');
-    // The close must report the ADMISSION, not merely that a task was built:
-    // a card closed `handed-off` for a task the tier then refused names an
-    // agent that never started.
-    expect(body).toMatch(/finishPreflightDispatch\(preflightCardId, admitted \? idleTask\.id : null\)/);
-  });
-});

@@ -103,27 +103,20 @@ describe('preflightTaskCard', () => {
     expect(addTask).not.toHaveBeenCalled();
   });
 
-  it('marks dispatch and hands off in one step, so the two engines cannot tell different stories', async () => {
+  it('marks dispatch and hands off in a SINGLE write, so the card never renders a half-done frame', async () => {
     const { createPreflightState } = await import('../lib/preflightPlan.js');
-    // Read-back reflects the last write, as the real store does: the close reads
-    // the card the dispatch report just persisted, which is the whole point of
-    // the two happening in one helper.
-    let stored = createPreflightState({ requestId: 'demand-1', taskType: 'pr-reviewer' });
-    getTaskById.mockImplementation(async () => cardFor(stored));
-    updateTask.mockImplementation(async (id, updates) => {
-      stored = updates.metadata.preflight;
-      return cardFor(stored);
-    });
+    getTaskById.mockResolvedValue(cardFor(createPreflightState({ requestId: 'demand-1', taskType: 'pr-reviewer' })));
     await finishPreflightDispatch(preflightCardId('demand-1'), 'app-improve-1');
-    // The dispatch report and the close are two writes; what matters is that the
-    // closed card carries BOTH — a handed-off card whose dispatch step never ran
-    // renders as a run that skipped its last step.
-    const [, closed] = updateTask.mock.calls.at(-1);
+    // One read-modify-write: a second one would re-read the card it just wrote
+    // and emit a second tasks:changed showing a dispatched-but-unfinished card.
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    const [, closed] = updateTask.mock.calls[0];
     expect(closed.status).toBe('completed');
     expect(closed.metadata.preflight.outcome).toBe('handed-off');
     expect(closed.metadata.preflightResultTaskId).toBe('app-improve-1');
-    const dispatchStep = closed.metadata.preflight.steps.find(step => step.key === 'dispatch');
-    expect(dispatchStep.status).toBe('done');
+    // The dispatch step is DONE in that same write — a handed-off card whose
+    // last step never ran renders as a run that skipped it.
+    expect(closed.metadata.preflight.steps.find(step => step.key === 'dispatch').status).toBe('done');
   });
 
   it('closes as nothing-to-do when the run produced no task, rather than naming an agent that never started', async () => {

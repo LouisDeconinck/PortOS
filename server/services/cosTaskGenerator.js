@@ -48,7 +48,7 @@ import { getActiveApps, getAppTaskTypeOverrides } from './apps.js';
 // The single Priority-0 on-demand loop body, shared with the dequeueNextTask
 // engine in cos.js so the two can no longer drift (#6618).
 import { drainOnDemandRequests } from './onDemandDrain.js';
-import { isIdleTierEligible } from './cosDequeue.js';
+import { closeStolenIdleReviewCard, isIdleTierEligible } from './cosDequeue.js';
 import { resolveAgentProviderPin } from './appTaskProviderPin.js';
 import { getTaskTypeConfidence } from './taskLearning.js';
 import { classifySafetyKind, requiresSafetyApproval } from './taskLearning/safetyKind.js';
@@ -72,7 +72,7 @@ import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js
 // reads the same set back via isClaimFlowTask().
 import { CLAIM_FLOW_TASK_TYPES } from '../lib/claimFlowTaskTypes.js';
 import { ServerError } from '../lib/errorHandler.js';
-import { isReconcileDrainTaskType, isUserOriginRequest } from './taskScheduleConstants.js';
+import { isReconcileDrainTaskType } from './taskScheduleConstants.js';
 import { isProgrammaticScheduledTaskType, requiresInstallWideTarget } from './taskScheduleRegistry.js';
 import {
   appendClaimOverrideContext,
@@ -1033,14 +1033,9 @@ async function spawnPriority4IdleReview(ctx) {
         tasksToSpawn.push(idleTask);
         trackSpawn(idleTask);
       }
-      // This tier may have STOLEN a human's on-demand request (see
-      // generateManagedAppImprovementTask). Closing its card is this tier's job
-      // because only here is the spawn decision final. Guarded so an ordinary
-      // idle tick — which has no card — pays neither the import nor a task read.
-      if (preflightCardId) {
-        const { finishPreflightDispatch } = await import('./preflightTaskCard.js');
-        await finishPreflightDispatch(preflightCardId, admitted ? idleTask.id : null);
-      }
+      // This tier may have STOLEN a human's on-demand request. Closing its card is
+      // the tier's job because only here is the admission decision final.
+      await closeStolenIdleReviewCard(preflightCardId, admitted ? idleTask : null);
     }
   }
 }
@@ -1954,19 +1949,16 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // silently promote the user's one-row click into a full-repo review — the
   // same widening the perpetual-refill skip guards against on the other side.
   let targetPullRequest = null;
-  // The programmatic-phase card a human's "Run" already opened, when this path
-  // is the one that ends up serving that Run. Stealing the request means
-  // inheriting its card: the on-demand drain will never see the request again,
-  // so if this path reports nothing the card is stranded at "Waiting for a free
-  // task slot" — while the agent it produced is visibly already working — until
-  // the orphan sweep mislabels it `interrupted` 15 minutes later.
+  // The card a human's "Run" already opened, when this steal is serving one —
+  // stealing the request means inheriting its card, because the on-demand drain
+  // will never see that request again. See `finishPreflightDispatch`.
   let stolenCardId = null;
 
   if (appRequests.length > 0) {
     const request = appRequests[0];
     targetPullRequest = request.targetPullRequest ?? null;
-    const { preflightCardId } = await import('./preflightTaskCard.js');
-    stolenCardId = isUserOriginRequest(request) ? preflightCardId(request.id) : null;
+    const { cardIdForRequest } = await import('./preflightTaskCard.js');
+    stolenCardId = cardIdForRequest(request);
     await taskSchedule.clearOnDemandRequest(request.id);
     // Only a human "Run" may clear the drain's brakes (park state, dispatch
     // count); the policy lives in applyOnDemandRunResets so this idle-review
@@ -1983,7 +1975,10 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
 
     if (!nextTypeResult) {
       emitLog('info', `No app improvement tasks are eligible for ${app.name} based on schedule`);
-      return { task: null, pendingPerpetualDispatch: null, preflightCardId: null };
+      // `stolenCardId`, never a literal null: this branch happens to be the one
+      // where no steal occurred, but a later early return added above it would
+      // strand the card all over again.
+      return { task: null, pendingPerpetualDispatch: null, preflightCardId: stolenCardId };
     }
 
     nextType = nextTypeResult.taskType;
