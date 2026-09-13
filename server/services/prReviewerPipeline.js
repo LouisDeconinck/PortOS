@@ -213,7 +213,11 @@ export async function runPrReviewerSecurityPreflight(taskType, app, metadata, ta
   // call below is a no-op. Failure to paint the card must never stop the scan.
   const step = async (key, options) => {
     if (!progress) return;
-    await progress(key, options).catch((err) => console.error(`❌ Preflight progress for '${key}' could not be recorded: ${err.message}`));
+    // Resolved rather than assumed thenable: a reporter that reports
+    // synchronously is a legitimate shape, and `.catch` on its undefined return
+    // would throw a TypeError straight out of the scan this must never stop.
+    await Promise.resolve(progress(key, options))
+      .catch((err) => console.error(`❌ Preflight progress for '${key}' could not be recorded: ${err.message}`));
   };
   await step('cadence');
 
