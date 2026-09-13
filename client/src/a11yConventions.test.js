@@ -3799,4 +3799,109 @@ function B() { const sensors = useSensors(useSensor(PointerSensor)); return <Dnd
     }
     expect(offenders, `Hand-rolled role="tablist" — render the shared components/ui/TabPills.jsx instead; it owns the roving tabindex + Arrow/Home/End contract a hand-rolled bar cannot honor (WCAG 4.1.2):\n${offenders.join('\n')}`).toEqual([]);
   });
+
+  // --- menu roles only where the contract is implemented (#7265) --------------
+  //
+  // `role="menu"` is the same class of promise as `role="tablist"` — screen
+  // readers suppress the browse cursor inside it and drive the contents with
+  // ArrowUp/ArrowDown roving focus, Home/End jumps, and Escape returning focus
+  // to the trigger. Claiming the role without implementing those keys makes
+  // the contents unreachable by the means the role announced (WCAG 4.1.2), and
+  // a menu may only own menuitem/group/separator children — a textbox or form
+  // inside it is an additional violation. Two components keep the contract:
+  // `components/ui/OverflowMenu.jsx` and `components/ThemeSwitcher.jsx`. The
+  // seven audited popovers that didn't dropped the claim in #7265 — the
+  // `ShellProviderLauncher.jsx` precedent, which keeps a plain named group of
+  // controls that Tab reaches natively. This scan is the backstop that keeps
+  // the eighth copy from landing.
+
+  // Files allowed to write menu-family roles — each implements the arrow-key
+  // contract itself. The allowlist only shrinks; a new compliant menu goes
+  // through `ui/OverflowMenu.jsx` instead of re-deriving the semantics.
+  const MENU_CONTRACT_ALLOWLIST = new Set([
+    'src/components/ui/OverflowMenu.jsx',
+    'src/components/ThemeSwitcher.jsx',
+  ]);
+
+  // The whole menu role family, not just "menu": BulkTargetPicker's rows were
+  // `role="menuitem"` in a different file than the `role="menu"` container, so
+  // a menu-only scan would have missed the row half of the audited defect.
+  const MENU_CONTRACT_ROLES = new Set(['menu', 'menubar', 'menuitem', 'menuitemcheckbox', 'menuitemradio']);
+
+  // The file-level "did anyone implement the promised keys" question. Any
+  // arrow key counts — a `menubar` legitimately answers Left/Right where a
+  // `menu` answers Up/Down. Comments are masked before this runs, so a doc
+  // comment mentioning ArrowDown can't forge the exemption.
+  const implementsArrowKeys = (src) => /\bArrow(?:Up|Down|Left|Right)\b/.test(src);
+
+  // Every element whose `role` attribute literally reads a menu-family role.
+  // Reading the answer off the parsed tag covers `role="menu"`, `role='menu'`
+  // and `role={'menu'}` as one question; a commented-out example is masked
+  // before the walk; a `closest('[role="menu"]')` selector string
+  // (meatspace/post/ElementsSong.jsx) is never a tag's role; and a dynamic
+  // `role={expr}` resolves to no verdict — left to review rather than guessed.
+  const menuContractSites = function* (src) {
+    // 'menu' absent → lexing the file cannot yield a menu-family tag.
+    if (!src.includes('menu')) return;
+    for (const node of forEachOpeningTag(src)) {
+      if (MENU_CONTRACT_ROLES.has(normalizedAttributeValue(attributeValue(node.tag, 'role')))) yield node;
+    }
+  };
+
+  it('ships menu roles only where arrow-key focus management backs them (#7265)', () => {
+    const offendersIn = (file, src) => {
+      if (MENU_CONTRACT_ALLOWLIST.has(file)) return [];
+      const sites = [...menuContractSites(src)];
+      if (sites.length === 0 || implementsArrowKeys(src)) return [];
+      return sites.map(({ index }) => `${file}:${lineOf(src, index)}`);
+    };
+
+    // Probes first — the tree is green by construction, so fixtures carry the
+    // proof that the walk rejects what the rule exists to reject.
+    const probe = (src, file = 'src/components/probe/Probe.jsx') => offendersIn(file, src);
+    // The audited shape: a menu claim with no arrow-key handling behind it.
+    expect(probe('<div role="menu"><button role="menuitem">A</button></div>'))
+      .toEqual(['src/components/probe/Probe.jsx:1', 'src/components/probe/Probe.jsx:1']);
+    // A bare menuitem in a file with no menu container is the same broken
+    // contract — the row half of the audited defect lived in its own file.
+    expect(probe('<ul><li><button role="menuitemcheckbox">B</button></li></ul>'))
+      .toEqual(['src/components/probe/Probe.jsx:1']);
+    // Whichever way the literal is spelled, and wherever the tag starts.
+    expect(probe("<ul\n  role='menu'\n/>")).toEqual(['src/components/probe/Probe.jsx:1']);
+    expect(probe('<div role={"menu"} />')).toEqual(['src/components/probe/Probe.jsx:1']);
+    // A menu WITH arrow-key handling keeps its contract — allowed anywhere.
+    expect(probe('const onKey = (e) => e.key === "ArrowDown" && focusNext();\n<div role="menu" onKeyDown={onKey} />')).toEqual([]);
+    expect(probe('const onKey = (e) => e.key === "ArrowRight" && focusNext();\n<div role="menubar" onKeyDown={onKey} />')).toEqual([]);
+    // The allowlisted primitives are exempt by name.
+    expect(probe('<div role="menu" />', 'src/components/ui/OverflowMenu.jsx')).toEqual([]);
+    expect(probe('<div role="menuitemradio" />', 'src/components/ThemeSwitcher.jsx')).toEqual([]);
+    // A selector string is not a role attribute, a commented example is masked
+    // before the walk, and a dynamic role is unverifiable — out of remit.
+    expect(probe('<div onKeyDown={(e) => e.target.closest?.("[role=\\"menu\\"]") && f()} />')).toEqual([]);
+    expect(probe(maskComments('{/* <div role="menu" /> */}'))).toEqual([]);
+    expect(probe('<div data-note="menu" role={roleFor(kind)} />')).toEqual([]);
+    // A comment naming the keys does not forge the exemption either.
+    expect(probe(maskComments('// ArrowDown is handled by the caller\n<div role="menu" />')))
+      .toEqual(['src/components/probe/Probe.jsx:2']);
+
+    // The allowlist is pinned to reality: both primitives must still write a
+    // menu-family role AND still implement the keys that exempt them.
+    for (const allowed of MENU_CONTRACT_ALLOWLIST) {
+      const src = maskedSourceOf(allowed);
+      expect(
+        [...menuContractSites(src)].length,
+        `${allowed} no longer writes a menu-family role — drop it from MENU_CONTRACT_ALLOWLIST`,
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        implementsArrowKeys(src),
+        `${allowed} lost its arrow-key handling — the role now promises keys nothing answers`,
+      ).toBe(true);
+    }
+
+    const offenders = [];
+    for (const file of trackedSourceFiles()) {
+      offenders.push(...offendersIn(file, maskedSourceOf(file)));
+    }
+    expect(offenders, `Menu-family role without arrow-key focus management — a role="menu" promises ArrowUp/ArrowDown roving focus, Home/End and Escape-to-trigger that a hand-rolled popover doesn't implement (WCAG 4.1.2). Drop the role (the ShellProviderLauncher.jsx precedent: a named group of plain controls needs none) or route the popover through components/ui/OverflowMenu.jsx:\n${offenders.join('\n')}`).toEqual([]);
+  });
 });

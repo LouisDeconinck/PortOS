@@ -270,7 +270,6 @@ export default function Shell() {
               title="cd to app folder"
               aria-label="cd to app folder"
               aria-expanded={folderDropdownOpen}
-              aria-haspopup="menu"
             >
               <FolderOpen size={14} />
               <span className="hidden sm:inline">cd to app</span>
